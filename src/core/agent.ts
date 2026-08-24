@@ -13,13 +13,14 @@ const DEFAULT_MAX_STEPS = 8;
 export class Agent {
   private readonly model: Model;
   private readonly tools: ToolRegistry;
-  private readonly options: Required<Pick<AgentOptions, "maxSteps">> & Omit<AgentOptions, "maxSteps">;//将可选字段变成必填字段
+  private readonly options: Required<Pick<AgentOptions, "maxSteps">> & Omit<AgentOptions, "maxSteps">;
 
   constructor(model: Model, tools = new ToolRegistry(), options: AgentOptions = {}) {
     const maxSteps = options.maxSteps ?? DEFAULT_MAX_STEPS;
     if (!Number.isInteger(maxSteps) || maxSteps < 1) {
       throw new Error("maxSteps must be a positive integer");
     }
+    // Normalize the default once so every run uses the same bounded loop.
     this.model = model;
     this.tools = tools;
     this.options = { ...options, maxSteps };
@@ -37,6 +38,7 @@ export class Agent {
     messages.push({ role: "user", content: input });
 
     for (let step = 1; step <= this.options.maxSteps; step += 1) {
+      // Cancellation is checked before each model/tool cycle so a stopped run cannot start another operation.
       this.options.signal?.throwIfAborted();
       await this.emit({ type: "model_started", step });
       let response: ModelResponse;

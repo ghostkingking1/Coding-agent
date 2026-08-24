@@ -24,6 +24,7 @@ export class WorkspacePolicy {
 
   constructor(options: WorkspacePolicyOptions) {
     if (!options.root.trim()) throw new Error("Workspace root must not be empty");
+    // Store the canonical root once; all later comparisons use the same path form.
     this.root = fs.realpathSync.native(path.resolve(options.root));
     this.allowHidden = options.allowHidden ?? false;
     this.maxFileBytes = options.maxFileBytes ?? 1024 * 1024;
@@ -43,6 +44,7 @@ export class WorkspacePolicy {
     if (input.includes("\0")) throw new WorkspaceSecurityError("Path contains a null byte");
     let candidate: string;
     try {
+      // Resolve links before checking containment so a link cannot escape the workspace.
       candidate = fs.realpathSync.native(path.resolve(this.root, input));
     } catch {
       throw new WorkspaceSecurityError("Path does not exist or cannot be resolved");
@@ -81,6 +83,7 @@ export class WorkspacePolicy {
 
   private assertVisible(candidate: string): void {
     if (this.allowHidden) return;
+    // Hidden paths are excluded by default because they commonly contain credentials or tool metadata.
     const relative = path.relative(this.root, candidate);
     if (relative.split(path.sep).some((part) => part.startsWith(".") && part !== ".")) {
       throw new WorkspaceSecurityError("Hidden workspace paths are not allowed");
@@ -141,6 +144,7 @@ export class SecurityPolicy implements ToolExecutionPolicy {
       input,
     };
     if (manifest.capabilities.every((capability) => capability === "read")) return;
+    // Authorization must complete before the registry invokes the tool and its side effects occur.
     await this.options.onApprovalRequired?.(request);
     if (!(await this.approval.requestApproval(request))) throw new ApprovalDeniedError(tool.name);
   }
