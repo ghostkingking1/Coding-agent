@@ -10,6 +10,7 @@ export interface ApprovalRequest {
   readonly toolName: string;
   readonly capabilities: readonly ToolCapability[];
   readonly input: unknown;
+  readonly preview?: unknown;
 }
 
 export interface Message {
@@ -48,6 +49,7 @@ export interface Tool {
   readonly name: string;
   readonly description: string;
   readonly manifest?: ToolManifest;
+  preview?(input: unknown, context: ToolContext): Promise<unknown> | unknown;
   execute(input: unknown, context: ToolContext): Promise<unknown> | unknown;
 }
 

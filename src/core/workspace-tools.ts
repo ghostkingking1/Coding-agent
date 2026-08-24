@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { WorkspacePolicy } from "./security.ts";
 import type { Tool } from "./types.ts";
+import { createPatchTool } from "./patch-tools.ts";
 
 export function createWorkspaceTools(policy: WorkspacePolicy): readonly Tool[] {
   return [
@@ -41,6 +42,7 @@ export function createWorkspaceTools(policy: WorkspacePolicy): readonly Tool[] {
         }
       },
     },
+    createPatchTool(policy),
     {
       name: "search_text",
       description: "Search for a literal string in UTF-8 text files inside the workspace.",
