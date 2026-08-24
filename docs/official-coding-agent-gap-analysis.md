@@ -1,7 +1,7 @@
 # Coding Agent 官方能力差距报告
 
-**基线**：v0.1 阶段一（2026-08-23）  
-**对象**：当前项目、Anthropic Claude Code、OpenAI Codex CLI  
+**基线**：v0.1 阶段一（2026-08-23）
+**对象**：当前项目、Anthropic Claude Code、OpenAI Codex CLI
 **证据原则**：只采用厂商官方产品文档、开发者文档和官方开源仓库；不采用评测文章、媒体报道或第三方营销材料。
 
 ## 结论
