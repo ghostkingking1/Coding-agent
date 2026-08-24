@@ -1,5 +1,17 @@
 export type Role = "system" | "user" | "assistant" | "tool";
 
+export type ToolCapability = "read" | "write" | "execute" | "network";
+
+export interface ToolManifest {
+  readonly capabilities: readonly ToolCapability[];
+}
+
+export interface ApprovalRequest {
+  readonly toolName: string;
+  readonly capabilities: readonly ToolCapability[];
+  readonly input: unknown;
+}
+
 export interface Message {
   role: Role;
   content: string;
@@ -28,16 +40,30 @@ export interface ToolContext {
   readonly signal?: AbortSignal;
 }
 
+export interface ToolExecutionPolicy {
+  authorize(tool: Tool, input: unknown, context: ToolContext): Promise<void> | void;
+}
+
 export interface Tool {
   readonly name: string;
   readonly description: string;
+  readonly manifest?: ToolManifest;
   execute(input: unknown, context: ToolContext): Promise<unknown> | unknown;
 }
+
+export type RunEvent =
+  | { type: "model_started"; step: number }
+  | { type: "tool_requested"; step: number; toolName: string; toolCallId: string }
+  | { type: "tool_completed"; step: number; toolName: string; toolCallId: string }
+  | { type: "tool_failed"; step: number; toolName: string; toolCallId: string; error: string }
+  | { type: "run_finished"; steps: number; stopReason: AgentResult["stopReason"] }
+  | { type: "run_failed"; error: string };
 
 export interface AgentOptions {
   maxSteps?: number;
   systemPrompt?: string;
   signal?: AbortSignal;
+  onEvent?: (event: RunEvent) => void | Promise<void>;
 }
 
 export interface AgentResult {

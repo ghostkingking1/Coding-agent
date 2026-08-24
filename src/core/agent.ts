@@ -4,6 +4,7 @@ import type {
   AgentResult,
   Message,
   Model,
+  ModelResponse,
   ToolCall,
 } from "./types.ts";
 
@@ -12,7 +13,7 @@ const DEFAULT_MAX_STEPS = 8;
 export class Agent {
   private readonly model: Model;
   private readonly tools: ToolRegistry;
-  private readonly options: Required<Pick<AgentOptions, "maxSteps">> & Omit<AgentOptions, "maxSteps">;
+  private readonly options: Required<Pick<AgentOptions, "maxSteps">> & Omit<AgentOptions, "maxSteps">;//将可选字段变成必填字段
 
   constructor(model: Model, tools = new ToolRegistry(), options: AgentOptions = {}) {
     const maxSteps = options.maxSteps ?? DEFAULT_MAX_STEPS;
@@ -37,7 +38,14 @@ export class Agent {
 
     for (let step = 1; step <= this.options.maxSteps; step += 1) {
       this.options.signal?.throwIfAborted();
-      const response = await this.model.generate(messages);
+      await this.emit({ type: "model_started", step });
+      let response: ModelResponse;
+      try {
+        response = await this.model.generate(messages);
+      } catch (error) {
+        await this.emit({ type: "run_failed", error: error instanceof Error ? error.message : String(error) });
+        throw error;
+      }
       const assistantMessage: Message = {
         role: "assistant",
         content: response.message.content,
@@ -46,33 +54,39 @@ export class Agent {
 
       const calls = response.toolCalls ?? [];
       if (calls.length === 0) {
-        return {
+        const result = {
           finalText: response.message.content,
           messages: [...messages],
           steps: step,
           stopReason: "completed",
-        };
+        } as const;
+        await this.emit({ type: "run_finished", steps: result.steps, stopReason: result.stopReason });
+        return result;
       }
 
       for (const call of calls) {
-        messages.push(await this.executeToolCall(call, messages));
+        await this.emit({ type: "tool_requested", step, toolName: call.name, toolCallId: call.id });
+        messages.push(await this.executeToolCall(call, messages, step));
       }
     }
 
-    return {
+    const result = {
       finalText: "",
       messages: [...messages],
       steps: this.options.maxSteps,
       stopReason: "max_steps",
-    };
+    } as const;
+    await this.emit({ type: "run_finished", steps: result.steps, stopReason: result.stopReason });
+    return result;
   }
 
-  private async executeToolCall(call: ToolCall, messages: readonly Message[]): Promise<Message> {
+  private async executeToolCall(call: ToolCall, messages: readonly Message[], step: number): Promise<Message> {
     try {
       const result = await this.tools.execute(call.name, call.input, {
         messages,
         signal: this.options.signal,
       });
+      await this.emit({ type: "tool_completed", step, toolName: call.name, toolCallId: call.id });
       return {
         role: "tool",
         content: serializeToolResult(result),
@@ -81,6 +95,7 @@ export class Agent {
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      await this.emit({ type: "tool_failed", step, toolName: call.name, toolCallId: call.id, error: message });
       return {
         role: "tool",
         content: JSON.stringify({ error: message }),
@@ -88,6 +103,10 @@ export class Agent {
         toolName: call.name,
       };
     }
+  }
+
+  private async emit(event: Parameters<NonNullable<AgentOptions["onEvent"]>>[0]): Promise<void> {
+    await this.options.onEvent?.(event);
   }
 }
 

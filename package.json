@@ -10,5 +10,9 @@
   "scripts": {
     "start": "node --experimental-strip-types src/cli.ts",
     "test": "node --experimental-strip-types --test \"src/**/*.test.ts\""
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "typescript": "^7.0.2"
   }
 }

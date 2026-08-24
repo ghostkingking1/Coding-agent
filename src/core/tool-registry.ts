@@ -1,7 +1,12 @@
-import type { Tool, ToolContext } from "./types.ts";
+import type { Tool, ToolContext, ToolExecutionPolicy } from "./types.ts";
 
 export class ToolRegistry {
   private readonly tools = new Map<string, Tool>();
+  private readonly policy?: ToolExecutionPolicy;
+
+  constructor(policy?: ToolExecutionPolicy) {
+    this.policy = policy;
+  }
 
   register(tool: Tool): this {
     if (!tool.name.trim()) {
@@ -27,6 +32,7 @@ export class ToolRegistry {
     if (!tool) {
       throw new Error(`Unknown tool: ${name}`);
     }
+    await this.policy?.authorize(tool, input, context);
     return tool.execute(input, context);
   }
 }
