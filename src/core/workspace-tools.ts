@@ -4,6 +4,7 @@ import { WorkspacePolicy } from "./security.ts";
 import type { Tool } from "./types.ts";
 import { createPatchTool } from "./patch-tools.ts";
 
+/** 创建一组受 WorkspacePolicy 约束的文件读取、搜索和 patch 工具。 */
 export function createWorkspaceTools(policy: WorkspacePolicy): readonly Tool[] {
   return [
     {
@@ -27,7 +28,7 @@ export function createWorkspaceTools(policy: WorkspacePolicy): readonly Tool[] {
         const depth = value.depth === undefined ? 2 : Number(value.depth);
         if (!Number.isInteger(depth) || depth < 0 || depth > 8) throw new Error("depth must be an integer from 0 to 8");
         const entries: string[] = [];
-        // Cap traversal so a large repository cannot exhaust the model context.
+        /** 限制遍历深度和条目数量，避免大型仓库耗尽模型上下文。 */
         await walk(root, 0);
         return entries;
 
@@ -55,7 +56,7 @@ export function createWorkspaceTools(policy: WorkspacePolicy): readonly Tool[] {
         if (!Number.isInteger(maxResults) || maxResults < 1 || maxResults > 1000) throw new Error("maxResults must be an integer from 1 to 1000");
         const root = policy.resolveDirectory(value.path ?? ".");
         const results: Array<{ path: string; line: number; text: string }> = [];
-        // Return bounded, line-oriented matches instead of entire file contents.
+        /** 返回有上限的逐行匹配结果，避免把整个文件内容塞入上下文。 */
         await search(root);
         return results;
 

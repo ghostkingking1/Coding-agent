@@ -2,27 +2,41 @@ import fs from "node:fs/promises";
 import type { WorkspacePolicy } from "./security.ts";
 import type { Tool } from "./types.ts";
 
+/** 描述一次基于精确文本匹配的文件变更。 */
 export interface PatchChange {
+  /** 工作区内的目标文件路径。 */
   readonly path: string;
+  /** 必须唯一匹配的原始文本。 */
   readonly find: string;
+  /** 用于替换原始文本的新文本；空字符串表示删除。 */
   readonly replaceWith: string;
 }
 
+/** patch 工具的输入结构。 */
 export interface PatchInput {
+  /** 按顺序应用的文件变更列表。 */
   readonly changes: readonly PatchChange[];
 }
 
+/** 单个文件在 patch 中的变更摘要。 */
 export interface PatchFileResult {
+  /** 相对于工作区根目录的文件路径。 */
   readonly path: string;
+  /** 该文件应用的变更数量。 */
   readonly changes: number;
 }
 
+/** patch 预览结果，不包含实际写入内容。 */
 export interface PatchPreview {
+  /** 面向审批方和调用方展示的 unified diff 文本。 */
   readonly preview: string;
+  /** 受影响文件的摘要。 */
   readonly files: readonly PatchFileResult[];
 }
 
+/** patch 应用成功后的结果。 */
 export interface PatchResult extends PatchPreview {
+  /** 是否已经完成写入。 */
   readonly applied: boolean;
 }
 
@@ -35,6 +49,7 @@ interface PlannedPatch {
 const MAX_PATCH_CHANGES = 50;
 const MAX_PREVIEW_CHARS = 20_000;
 
+/** 创建一个先生成 diff、再由审批策略决定是否执行写入的 patch 工具。 */
 export function createPatchTool(policy: WorkspacePolicy): Tool {
   return {
     name: "apply_patch",
@@ -69,6 +84,7 @@ async function planPatch(policy: WorkspacePolicy, input: unknown, context: { rea
     const find = assertFind(change.find, "find");
     const replaceWith = assertReplacement(change.replaceWith, "replaceWith");
     const resolved = policy.resolveFile(change.path);
+    /** 同一文件的多处修改基于内存中的最新内容串行规划，避免后续匹配读到旧文件。 */
     const existing = loadedFiles.get(resolved.path) ?? {
       content: await fs.readFile(resolved.path, "utf8"),
       relativePath: policy.relative(resolved.path),
@@ -126,6 +142,7 @@ function assertReplacement(value: unknown, label: string): string {
 function applyExactReplacement(content: string, find: string, replaceWith: string, relativePath: string, maxFileBytes: number): { content: string; startLine: number } {
   const index = content.indexOf(find);
   if (index < 0) throw new Error(`Patch text not found in ${relativePath}`);
+  /** 只接受唯一匹配，避免模糊修改错误位置。 */
   if (content.indexOf(find, index + find.length) >= 0) {
     throw new Error(`Patch text is ambiguous in ${relativePath}`);
   }
@@ -164,6 +181,7 @@ function lineCount(text: string): number {
 
 function clampPreview(preview: string): string {
   if (preview.length <= MAX_PREVIEW_CHARS) return preview;
+  /** 预览本身也必须有上限，避免审批上下文被超大 diff 占满。 */
   return `${preview.slice(0, MAX_PREVIEW_CHARS)}\n... preview truncated ...`;
 }
 
