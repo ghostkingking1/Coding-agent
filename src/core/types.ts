@@ -85,6 +85,7 @@ export type RunEvent =
   | { type: "tool_failed"; step: number; toolName: string; toolCallId: string; error: string }
   | { type: "run_finished"; steps: number; stopReason: AgentResult["stopReason"] }
   | { type: "run_failed"; error: string };
+
 /** Agent 的运行配置。 */
 export interface AgentOptions {
   /** 单次运行允许的最大模型循环次数。 */
