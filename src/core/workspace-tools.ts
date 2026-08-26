@@ -3,8 +3,9 @@ import path from "node:path";
 import { WorkspacePolicy } from "./security.ts";
 import type { Tool } from "./types.ts";
 import { createPatchTool } from "./patch-tools.ts";
+import { createRunCommandTool } from "./command-tools.ts";
 
-/** 创建一组受 WorkspacePolicy 约束的文件读取、搜索和 patch 工具。 */
+/** 创建一组受 WorkspacePolicy 约束的文件读取、搜索、patch 和命令执行工具。 */
 export function createWorkspaceTools(policy: WorkspacePolicy): readonly Tool[] {
   return [
     {
@@ -45,6 +46,7 @@ export function createWorkspaceTools(policy: WorkspacePolicy): readonly Tool[] {
       },
     },
     createPatchTool(policy),
+    createRunCommandTool(policy),
     {
       name: "search_text",
       description: "Search for a literal string in UTF-8 text files inside the workspace.",

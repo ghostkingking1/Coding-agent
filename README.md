@@ -18,7 +18,7 @@ CLI 使用内置 `EchoModel` 演示运行链路。接入真实模型时，实现
 - `src/core/types.ts`：模型、消息、工具和运行结果的稳定契约。
 - `src/core/tool-registry.ts`：工具注册、查找和执行。
 - `src/core/agent.ts`：`user -> model -> tool calls -> tool results -> model` 循环，带最大步数、取消信号和工具错误回传。
-- `src/core/workspace-tools.ts` / `src/core/patch-tools.ts`：受限工作区读工具和可预览、可审批的 patch 工具。
+- `src/core/workspace-tools.ts` / `src/core/patch-tools.ts` / `src/core/command-tools.ts`：受限工作区读工具、可预览可审批的 patch 工具和命令执行工具。
 - `src/cli.ts`：无外部服务的可运行演示入口。
 
 ## 与成熟 Coding Agent 的差距
@@ -37,4 +37,4 @@ CLI 使用内置 `EchoModel` 演示运行链路。接入真实模型时，实现
 
 阶段二的首个切片已经加入受限工作区只读能力：`read_file`、`list_files` 和 `search_text`。这些工具通过 `WorkspacePolicy` 校验真实路径、工作区边界、隐藏路径、文件大小和结果数量；工具也必须声明 capability，写入、执行和网络能力由 `SecurityPolicy` 在副作用发生前审批，默认拒绝。
 
-当前仍未提供命令执行或网络工具。下一步应在复用同一 capability/approval 接口的基础上实现受限的 `run_command` 和 `run_tests`。
+当前已提供受限的 `run_command`：命令通过 `spawn` 的 argv 形式执行，不经过 shell 拼接；cwd 必须位于工作区内，执行前需要 `execute` capability 审批，并受超时、stdout/stderr 大小和环境变量白名单限制。超时或取消时会终止子进程树。下一步应在复用同一 capability/approval 接口的基础上实现结构化的 `run_tests`。
