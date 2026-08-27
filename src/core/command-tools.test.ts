@@ -6,6 +6,7 @@ import test from "node:test";
 import { createRunCommandTool, type RunCommandPreview, type RunCommandResult } from "./command-tools.ts";
 import { ApprovalDeniedError, SecurityPolicy, WorkspacePolicy, WorkspaceSecurityError } from "./security.ts";
 import { ToolRegistry } from "./tool-registry.ts";
+import type { Tool, ToolContext } from "./types.ts";
 
 async function withWorkspace(run: (root: string) => Promise<void>): Promise<void> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "coding-agent-"));
@@ -16,12 +17,16 @@ async function withWorkspace(run: (root: string) => Promise<void>): Promise<void
   }
 }
 
+async function executeTool(tool: Tool, input: unknown, context: ToolContext = { messages: [] }): Promise<unknown> {
+  return new ToolRegistry().register(tool).execute(tool.name, input, context);
+}
+
 test("run_command executes an approved command inside the workspace cwd", async () => {
   await withWorkspace(async (root) => {
     await fs.mkdir(path.join(root, "src"));
     const tool = createRunCommandTool(new WorkspacePolicy({ root }));
 
-    const result = await tool.execute({
+    const result = await executeTool(tool, {
       command: process.execPath,
       args: ["-e", "console.log(process.cwd())"],
       cwd: "src",
@@ -40,11 +45,11 @@ test("run_command rejects cwd escape attempts", async () => {
     const tool = createRunCommandTool(new WorkspacePolicy({ root }));
 
     await assert.rejects(
-      () => Promise.resolve(tool.execute({
+      () => executeTool(tool, {
         command: process.execPath,
         args: ["-e", "console.log('nope')"],
         cwd: "..",
-      }, { messages: [] })),
+      }, { messages: [] }),
       WorkspaceSecurityError,
     );
   });
@@ -85,7 +90,7 @@ test("run_command truncates stdout and stderr independently", async () => {
       maxStderrBytes: 7,
     });
 
-    const result = await tool.execute({
+    const result = await executeTool(tool, {
       command: process.execPath,
       args: ["-e", "process.stdout.write('abcdefghij'); process.stderr.write('klmnopqrst')"],
     }, { messages: [] }) as RunCommandResult;
@@ -103,7 +108,7 @@ test("run_command only exposes allowlisted environment variables", async () => {
       allowedEnv: ["FOO"],
     });
 
-    const result = await tool.execute({
+    const result = await executeTool(tool, {
       command: process.execPath,
       args: ["-e", "console.log(`${process.env.FOO}:${process.env.BAR}`)"],
       env: {
@@ -124,7 +129,7 @@ test("run_command invokes Windows cmd shims without corrupting paths", { skip: p
     await fs.writeFile(shim, "@echo off\r\necho %~1\r\n", "utf8");
     const tool = createRunCommandTool(new WorkspacePolicy({ root }));
 
-    const result = await tool.execute({
+    const result = await executeTool(tool, {
       command: ".\\echo-arg.cmd",
       args: ["hello"],
     }, { messages: [] }) as RunCommandResult;
@@ -148,7 +153,7 @@ test("run_command times out and terminates descendant processes", async () => {
       maxTimeoutMs: 1000,
     });
 
-    const result = await tool.execute({
+    const result = await executeTool(tool, {
       command: process.execPath,
       args: ["-e", parentCode],
     }, { messages: [] }) as RunCommandResult;
@@ -164,7 +169,7 @@ test("run_command aborts and terminates the running process tree", async () => {
   await withWorkspace(async (root) => {
     const controller = new AbortController();
     const tool = createRunCommandTool(new WorkspacePolicy({ root }));
-    const execution = tool.execute({
+    const execution = executeTool(tool, {
       command: process.execPath,
       args: ["-e", "setTimeout(() => {}, 5000)"],
     }, { messages: [], signal: controller.signal }) as Promise<RunCommandResult>;

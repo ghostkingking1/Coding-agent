@@ -1,22 +1,9 @@
 import fs from "node:fs/promises";
+import { z } from "zod";
 import type { WorkspacePolicy } from "./security.ts";
-import type { Tool, ToolInputSchema } from "./types.ts";
-
-/** 描述一次基于精确文本匹配的文件变更。 */
-export interface PatchChange {
-  /** 工作区内的目标文件路径。 */
-  readonly path: string;
-  /** 必须唯一匹配的原始文本。 */
-  readonly find: string;
-  /** 用于替换原始文本的新文本；空字符串表示删除。 */
-  readonly replaceWith: string;
-}
-
-/** patch 工具的输入结构。 */
-export interface PatchInput {
-  /** 按顺序应用的文件变更列表。 */
-  readonly changes: readonly PatchChange[];
-}
+import { pathInputSchema, stringWithoutNullByteSchema } from "./tool-input-schemas.ts";
+import { defineTool } from "./tool-schema.ts";
+import type { Tool } from "./types.ts";
 
 /** 单个文件在 patch 中的变更摘要。 */
 export interface PatchFileResult {
@@ -48,35 +35,28 @@ interface PlannedPatch {
 
 const MAX_PATCH_CHANGES = 50;
 const MAX_PREVIEW_CHARS = 20_000;
-const patchInputSchema: ToolInputSchema = {
-  type: "object",
-  properties: {
-    changes: {
-      type: "array",
-      minItems: 1,
-      maxItems: MAX_PATCH_CHANGES,
-      items: {
-        type: "object",
-        properties: {
-          path: { type: "string", minLength: 1 },
-          find: { type: "string", minLength: 1 },
-          replaceWith: { type: "string" },
-        },
-        required: ["path", "find", "replaceWith"],
-        additionalProperties: false,
-      },
-    },
-  },
-  required: ["changes"],
-  additionalProperties: false,
-};
+const patchInputSchema = z.object({
+  changes: z.array(z.object({
+    path: pathInputSchema,
+    find: stringWithoutNullByteSchema.min(1),
+    replaceWith: stringWithoutNullByteSchema,
+  }).strict()).min(1).max(MAX_PATCH_CHANGES),
+}).strict();
+
+const patchChangeSchema = patchInputSchema.shape.changes.element;
+
+/** 描述一次基于精确文本匹配的文件变更，由 Zod schema 自动推导。 */
+export type PatchChange = z.output<typeof patchChangeSchema>;
+/** patch 工具输入类型，由 Zod schema 自动推导。 */
+export type PatchInput = z.output<typeof patchInputSchema>;
 
 /** 创建一个先生成 diff、再由审批策略决定是否执行写入的 patch 工具。 */
 export function createPatchTool(policy: WorkspacePolicy): Tool {
-  return {
+  return defineTool({
     name: "apply_patch",
     description: "Preview and apply structured text replacements inside the workspace.",
-    manifest: { capabilities: ["read", "write"], inputSchema: patchInputSchema },
+    capabilities: ["read", "write"],
+    inputSchema: patchInputSchema,
     async preview(input, context) {
       const plan = await planPatch(policy, input, context);
       return { preview: plan.preview, files: plan.files } satisfies PatchPreview;
@@ -88,23 +68,15 @@ export function createPatchTool(policy: WorkspacePolicy): Tool {
       }
       return { applied: true, preview: plan.preview, files: plan.files } satisfies PatchResult;
     },
-  };
+  });
 }
 
-async function planPatch(policy: WorkspacePolicy, input: unknown, context: { readonly signal?: AbortSignal }): Promise<PlannedPatch> {
-  const value = assertPatchInput(input);
-  if (value.changes.length === 0) throw new Error("changes must not be empty");
-  if (value.changes.length > MAX_PATCH_CHANGES) {
-    throw new Error(`changes must not exceed ${MAX_PATCH_CHANGES}`);
-  }
-
+async function planPatch(policy: WorkspacePolicy, input: PatchInput, context: { readonly signal?: AbortSignal }): Promise<PlannedPatch> {
   const loadedFiles = new Map<string, { content: string; relativePath: string; changes: number }>();
   const hunks: string[] = [];
 
-  for (const change of value.changes) {
+  for (const change of input.changes) {
     throwIfAborted(context.signal);
-    const find = assertFind(change.find, "find");
-    const replaceWith = assertReplacement(change.replaceWith, "replaceWith");
     const resolved = policy.resolveFile(change.path);
     /** 同一文件的多处修改基于内存中的最新内容串行规划，避免后续匹配读到旧文件。 */
     const existing = loadedFiles.get(resolved.path) ?? {
@@ -113,52 +85,17 @@ async function planPatch(policy: WorkspacePolicy, input: unknown, context: { rea
       changes: 0,
     };
 
-    const applied = applyExactReplacement(existing.content, find, replaceWith, existing.relativePath, policy.maxFileBytes);
+    const applied = applyExactReplacement(existing.content, change.find, change.replaceWith, existing.relativePath, policy.maxFileBytes);
     existing.content = applied.content;
     existing.changes += 1;
     loadedFiles.set(resolved.path, existing);
-    hunks.push(renderHunk(existing.relativePath, applied.startLine, find, replaceWith));
+    hunks.push(renderHunk(existing.relativePath, applied.startLine, change.find, change.replaceWith));
   }
 
   const files = [...loadedFiles.entries()].map(([path, value]) => ({ path: value.relativePath, changes: value.changes }));
   const preview = clampPreview(hunks.join("\n\n"));
   const writes = [...loadedFiles.entries()].map(([path, value]) => ({ path, content: value.content }));
   return { preview, files, writes };
-}
-
-function assertPatchInput(input: unknown): PatchInput {
-  if (!isRecord(input)) throw new Error("Patch input must be an object");
-  if (!Array.isArray(input.changes)) throw new Error("changes must be an array");
-  return {
-    changes: input.changes.map((change, index) => assertPatchChange(change, index)),
-  };
-}
-
-function assertPatchChange(change: unknown, index: number): PatchChange {
-  if (!isRecord(change)) throw new Error(`changes[${index}] must be an object`);
-  return {
-    path: assertPath(change.path, `changes[${index}].path`),
-    find: assertFind(change.find, `changes[${index}].find`),
-    replaceWith: assertReplacement(change.replaceWith, `changes[${index}].replaceWith`),
-  };
-}
-
-function assertPath(value: unknown, label: string): string {
-  if (typeof value !== "string" || !value.trim()) throw new Error(`${label} must be a non-empty string`);
-  if (value.includes("\0")) throw new Error(`${label} must not contain a null byte`);
-  return value;
-}
-
-function assertFind(value: unknown, label: string): string {
-  if (typeof value !== "string" || value.length === 0) throw new Error(`${label} must be a non-empty string`);
-  if (value.includes("\0")) throw new Error(`${label} must not contain a null byte`);
-  return value;
-}
-
-function assertReplacement(value: unknown, label: string): string {
-  if (typeof value !== "string") throw new Error(`${label} must be a string`);
-  if (value.includes("\0")) throw new Error(`${label} must not contain a null byte`);
-  return value;
 }
 
 function applyExactReplacement(content: string, find: string, replaceWith: string, relativePath: string, maxFileBytes: number): { content: string; startLine: number } {
@@ -209,8 +146,4 @@ function clampPreview(preview: string): string {
 
 function throwIfAborted(signal?: AbortSignal): void {
   signal?.throwIfAborted();
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }

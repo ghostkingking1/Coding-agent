@@ -1,22 +1,11 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { z } from "zod";
 import { WorkspacePolicy } from "./security.ts";
-import type { Tool, ToolContext, ToolInputSchema } from "./types.ts";
-
-/** run_command 工具的输入结构。 */
-export interface RunCommandInput {
-  /** 要执行的命令名称或可执行文件路径。 */
-  readonly command: string;
-  /** 以 argv 形式传入的参数，避免把整条命令交给 shell 拼接。 */
-  readonly args?: readonly string[];
-  /** 工作区内的执行目录，默认是工作区根目录。 */
-  readonly cwd?: string;
-  /** 本次命令允许运行的毫秒数。 */
-  readonly timeoutMs?: number;
-  /** 额外传给子进程的环境变量，只有白名单内的 key 会生效。 */
-  readonly env?: Readonly<Record<string, string>>;
-}
+import { argsInputSchema, envInputSchema, singleLineTextSchema } from "./tool-input-schemas.ts";
+import { defineTool } from "./tool-schema.ts";
+import type { Tool, ToolContext } from "./types.ts";
 
 /** run_command 工具的安全和资源限制配置。 */
 export interface RunCommandToolOptions {
@@ -77,18 +66,9 @@ interface SpawnPlan {
   readonly windowsVerbatimArguments?: boolean;
 }
 
-interface ValidatedRunCommandInput {
-  readonly command: string;
-  readonly args: readonly string[];
-  readonly cwd: string;
-  readonly timeoutMs?: number;
-  readonly env: Readonly<Record<string, string>>;
-}
-
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_STREAM_BYTES = 64 * 1024;
-const SAFE_ENV_KEY_PATTERN = "^[A-Za-z_][A-Za-z0-9_]*$";
 const DEFAULT_ALLOWED_ENV = [
   "PATH",
   "Path",
@@ -102,30 +82,26 @@ const DEFAULT_ALLOWED_ENV = [
   "APPDATA",
   "LOCALAPPDATA",
 ] as const;
-const runCommandInputSchema: ToolInputSchema = {
-  type: "object",
-  properties: {
-    command: { type: "string", minLength: 1 },
-    args: { type: "array", items: { type: "string" } },
-    cwd: { type: "string", minLength: 1 },
-    timeoutMs: { type: "integer", minimum: 1 },
-    env: {
-      type: "record",
-      keyPattern: SAFE_ENV_KEY_PATTERN,
-      values: { type: "string" },
-    },
-  },
-  required: ["command"],
-  additionalProperties: false,
-};
+const runCommandInputSchema = z.object({
+  command: singleLineTextSchema,
+  args: argsInputSchema.default([]),
+  cwd: singleLineTextSchema.default("."),
+  timeoutMs: z.number().int().min(1).optional(),
+  env: envInputSchema.default({}),
+}).strict();
+
+/** run_command 原始输入类型，由 Zod schema 自动推导。 */
+export type RunCommandInput = z.input<typeof runCommandInputSchema>;
+type ParsedRunCommandInput = z.output<typeof runCommandInputSchema>;
 
 /** 创建受工作区、审批、超时、输出和环境白名单限制的命令执行工具。 */
 export function createRunCommandTool(policy: WorkspacePolicy, options: RunCommandToolOptions = {}): Tool {
   const limits = normalizeOptions(options);
-  return {
+  return defineTool({
     name: "run_command",
     description: "Run an approved command with workspace cwd, timeout, output limits, and an environment allowlist.",
-    manifest: { capabilities: ["execute"], inputSchema: runCommandInputSchema },
+    capabilities: ["execute"],
+    inputSchema: runCommandInputSchema,
     preview(input) {
       return planCommand(policy, limits, input).preview;
     },
@@ -133,7 +109,7 @@ export function createRunCommandTool(policy: WorkspacePolicy, options: RunComman
       const plan = planCommand(policy, limits, input);
       return runPlannedCommand(plan, context);
     },
-  };
+  });
 }
 
 function normalizeOptions(options: RunCommandToolOptions): NormalizedRunCommandOptions {
@@ -155,21 +131,20 @@ function normalizeOptions(options: RunCommandToolOptions): NormalizedRunCommandO
   };
 }
 
-function planCommand(policy: WorkspacePolicy, options: NormalizedRunCommandOptions, input: unknown): PlannedCommand {
-  const value = assertRunCommandInput(input);
-  const cwdPath = policy.resolveDirectory(value.cwd ?? ".");
-  const timeoutMs = value.timeoutMs ?? options.defaultTimeoutMs;
+function planCommand(policy: WorkspacePolicy, options: NormalizedRunCommandOptions, input: ParsedRunCommandInput): PlannedCommand {
+  const cwdPath = policy.resolveDirectory(input.cwd);
+  const timeoutMs = input.timeoutMs ?? options.defaultTimeoutMs;
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > options.maxTimeoutMs) {
     throw new Error(`timeoutMs must be an integer from 1 to ${options.maxTimeoutMs}`);
   }
-  const env = buildEnvironment(options.allowedEnv, value.env ?? {});
+  const env = buildEnvironment(options.allowedEnv, input.env);
   const envKeys = Object.keys(env).sort((a, b) => a.localeCompare(b));
   return {
     cwdPath,
     env,
     preview: {
-      command: value.command,
-      args: value.args,
+      command: input.command,
+      args: input.args,
       cwd: policy.relative(cwdPath),
       timeoutMs,
       maxStdoutBytes: options.maxStdoutBytes,
@@ -177,44 +152,6 @@ function planCommand(policy: WorkspacePolicy, options: NormalizedRunCommandOptio
       envKeys,
     },
   };
-}
-
-function assertRunCommandInput(input: unknown): ValidatedRunCommandInput {
-  if (!isRecord(input)) throw new Error("run_command input must be an object");
-  const command = assertText(input.command, "command");
-  const args = input.args === undefined ? [] : assertArgs(input.args);
-  const cwd = input.cwd === undefined ? "." : assertText(input.cwd, "cwd");
-  const timeoutMs = input.timeoutMs === undefined ? undefined : Number(input.timeoutMs);
-  const env = input.env === undefined ? {} : assertEnv(input.env);
-  return { command, args, cwd, timeoutMs, env };
-}
-
-function assertArgs(value: unknown): readonly string[] {
-  if (!Array.isArray(value)) throw new Error("args must be an array");
-  return value.map((item, index) => {
-    if (typeof item !== "string") throw new Error(`args[${index}] must be a string`);
-    if (item.includes("\0")) throw new Error(`args[${index}] must not contain a null byte`);
-    return item;
-  });
-}
-
-function assertEnv(value: unknown): Readonly<Record<string, string>> {
-  if (!isRecord(value)) throw new Error("env must be an object");
-  const env: Record<string, string> = {};
-  for (const [key, envValue] of Object.entries(value)) {
-    if (!isSafeEnvKey(key)) throw new Error(`Invalid env key: ${key}`);
-    if (typeof envValue !== "string") throw new Error(`env.${key} must be a string`);
-    if (envValue.includes("\0")) throw new Error(`env.${key} must not contain a null byte`);
-    env[key] = envValue;
-  }
-  return env;
-}
-
-function assertText(value: unknown, label: string): string {
-  if (typeof value !== "string" || !value.trim()) throw new Error(`${label} must be a non-empty string`);
-  if (value.includes("\0")) throw new Error(`${label} must not contain a null byte`);
-  if (value.includes("\r") || value.includes("\n")) throw new Error(`${label} must not contain line breaks`);
-  return value;
 }
 
 function buildEnvironment(allowedEnv: readonly string[], requestedEnv: Readonly<Record<string, string>>): NodeJS.ProcessEnv {
@@ -239,10 +176,6 @@ function isAllowedEnvKey(allowedEnv: readonly string[], key: string): boolean {
   return process.platform === "win32"
     ? allowedEnv.some((allowedKey) => allowedKey.toLowerCase() === key.toLowerCase())
     : allowedEnv.includes(key);
-}
-
-function isSafeEnvKey(key: string): boolean {
-  return new RegExp(SAFE_ENV_KEY_PATTERN).test(key);
 }
 
 async function runPlannedCommand(plan: PlannedCommand, context: ToolContext): Promise<RunCommandResult> {
@@ -423,8 +356,4 @@ function createLimitedBuffer(limit: number): { append(chunk: Buffer): void; text
 
 function assertPositiveInteger(value: number, label: string): void {
   if (!Number.isInteger(value) || value < 1) throw new Error(`${label} must be a positive integer`);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }

@@ -39,11 +39,9 @@ export class ToolRegistry {
     if (!tool) {
       throw new Error(`Unknown tool: ${name}`);
     }
-    if (tool.manifest?.inputSchema) {
-      /** 输入校验必须早于审批和执行，避免非法参数触发预览、副作用或路径解析。 */
-      validateToolInput(tool.manifest.inputSchema, input);
-    }
-    await this.policy?.authorize(tool, input, context);
-    return tool.execute(input, context);
+    /** 输入解析必须早于审批和执行，避免非法参数触发预览、副作用或路径解析。 */
+    const parsedInput = tool.manifest?.inputSchema ? validateToolInput(tool.manifest.inputSchema, input) : input;
+    await this.policy?.authorize(tool, parsedInput, context);
+    return tool.execute(parsedInput, context);
   }
 }

@@ -6,6 +6,7 @@ import test from "node:test";
 import { ApprovalDeniedError, SecurityPolicy, WorkspacePolicy, WorkspaceSecurityError } from "./security.ts";
 import { createWorkspaceTools } from "./workspace-tools.ts";
 import { ToolRegistry } from "./tool-registry.ts";
+import type { Tool } from "./types.ts";
 
 async function withWorkspace(run: (root: string) => Promise<void>): Promise<void> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "coding-agent-"));
@@ -14,6 +15,10 @@ async function withWorkspace(run: (root: string) => Promise<void>): Promise<void
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
+}
+
+async function executeTool(tool: Tool, input: unknown): Promise<unknown> {
+  return new ToolRegistry().register(tool).execute(tool.name, input, { messages: [] });
 }
 
 test("workspace tools read and search only visible files", async () => {
@@ -27,12 +32,12 @@ test("workspace tools read and search only visible files", async () => {
     const listFiles = tools.find((tool) => tool.name === "list_files");
     const searchText = tools.find((tool) => tool.name === "search_text");
     if (!readFile || !listFiles || !searchText) throw new Error("Workspace tools were not registered");
-    assert.deepEqual(await readFile.execute({ path: "src/main.ts" }, { messages: [] }), {
+    assert.deepEqual(await executeTool(readFile, { path: "src/main.ts" }), {
       path: path.join("src", "main.ts"),
       content: "const answer = 42;\n",
     });
-    assert.deepEqual(await listFiles.execute({ path: ".", depth: 2 }, { messages: [] }), ["src", path.join("src", "main.ts")]);
-    assert.deepEqual(await searchText.execute({ query: "answer" }, { messages: [] }), [{
+    assert.deepEqual(await executeTool(listFiles, { path: ".", depth: 2 }), ["src", path.join("src", "main.ts")]);
+    assert.deepEqual(await executeTool(searchText, { query: "answer" }), [{
       path: path.join("src", "main.ts"),
       line: 1,
       text: "const answer = 42;",

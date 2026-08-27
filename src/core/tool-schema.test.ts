@@ -3,27 +3,21 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { z } from "zod";
 import { ApprovalDeniedError, SecurityPolicy, WorkspacePolicy } from "./security.ts";
-import { ToolInputValidationError, validateToolInput } from "./tool-schema.ts";
+import { defineTool, ToolInputValidationError, validateToolInput } from "./tool-schema.ts";
 import { ToolRegistry } from "./tool-registry.ts";
-import type { ToolInputSchema } from "./types.ts";
 import { createWorkspaceTools } from "./workspace-tools.ts";
 
-const sampleSchema: ToolInputSchema = {
-  type: "object",
-  properties: {
-    path: { type: "string", minLength: 1 },
-    args: { type: "array", items: { type: "string" }, maxItems: 2 },
-    depth: { type: "integer", minimum: 0, maximum: 8 },
-    env: {
-      type: "record",
-      keyPattern: "^[A-Za-z_][A-Za-z0-9_]*$",
-      values: { type: "string" },
-    },
-  },
-  required: ["path"],
-  additionalProperties: false,
-};
+const sampleSchema = z.object({
+  path: z.string().min(1),
+  args: z.array(z.string()).max(2).optional(),
+  depth: z.number().int().min(0).max(8).optional(),
+  env: z.record(
+    z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
+    z.string(),
+  ).optional(),
+}).strict();
 
 async function withWorkspace(run: (root: string) => Promise<void>): Promise<void> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "coding-agent-"));
@@ -46,20 +40,20 @@ test("tool schema accepts valid object input", () => {
 test("tool schema rejects malformed input with field paths", () => {
   assert.throws(() => validateToolInput(sampleSchema, "nope"), {
     name: "ToolInputValidationError",
-    message: "input must be an object",
   });
-  assert.throws(() => validateToolInput(sampleSchema, {}), /input\.path is required/);
-  assert.throws(() => validateToolInput(sampleSchema, { path: "" }), /input\.path must be at least 1 characters/);
+  assert.throws(() => validateToolInput(sampleSchema, {}), /input\.path/);
+  assert.throws(() => validateToolInput(sampleSchema, { path: "" }), /input\.path/);
   assert.throws(() => validateToolInput(sampleSchema, { path: "x", extra: true }), /input\.extra is not allowed/);
-  assert.throws(() => validateToolInput(sampleSchema, { path: "x", args: [1] }), /input\.args\[0\] must be a string/);
-  assert.throws(() => validateToolInput(sampleSchema, { path: "x", depth: 9 }), /input\.depth must be less than or equal to 8/);
-  assert.throws(() => validateToolInput(sampleSchema, { path: "x", env: { "BAD-KEY": "x" } }), /input\.env\.BAD-KEY must match pattern/);
+  assert.throws(() => validateToolInput(sampleSchema, { path: "x", args: [1] }), /input\.args\[0\]/);
+  assert.throws(() => validateToolInput(sampleSchema, { path: "x", depth: 9 }), /input\.depth/);
+  assert.throws(() => validateToolInput(sampleSchema, { path: "x", env: { "BAD-KEY": "x" } }), /input\.env\.BAD-KEY/);
 });
 
-test("tool registry validates input before approval preview or execution", async () => {
+test("tool registry parses input before approval preview or execution", async () => {
   let previewed = false;
   let approved = false;
   let executed = false;
+  let parsedPreviewInput: unknown;
   const registry = new ToolRegistry(new SecurityPolicy({
     approval: {
       requestApproval() {
@@ -68,27 +62,21 @@ test("tool registry validates input before approval preview or execution", async
       },
     },
   }));
-  registry.register({
+  registry.register(defineTool({
     name: "write_file",
     description: "test write",
-    manifest: {
-      capabilities: ["write"],
-      inputSchema: {
-        type: "object",
-        properties: { path: { type: "string", minLength: 1 } },
-        required: ["path"],
-        additionalProperties: false,
-      },
-    },
-    preview() {
+    capabilities: ["write"],
+    inputSchema: z.object({ path: z.string().min(1), mode: z.literal("replace").default("replace") }).strict(),
+    preview(input) {
       previewed = true;
+      parsedPreviewInput = input;
       return {};
     },
     execute() {
       executed = true;
       return {};
     },
-  });
+  }));
 
   await assert.rejects(
     () => registry.execute("write_file", { path: "" }, { messages: [] }),
@@ -105,6 +93,7 @@ test("tool registry validates input before approval preview or execution", async
   assert.equal(previewed, true);
   assert.equal(approved, true);
   assert.equal(executed, false);
+  assert.deepEqual(parsedPreviewInput, { path: "x", mode: "replace" });
 });
 
 test("workspace tools expose input schemas", async () => {

@@ -1,52 +1,13 @@
+import type { z } from "zod";
+
 /** 消息的发送者角色。 */
 export type Role = "system" | "user" | "assistant" | "tool";
 
 /** 工具声明的能力类型，用于审批和安全策略判断。 */
 export type ToolCapability = "read" | "write" | "execute" | "network";
 
-/** 工具输入 schema 的轻量 JSON Schema 子集。 */
-export type ToolInputSchema = BooleanSchema | IntegerSchema | StringSchema | ArraySchema | ObjectSchema | RecordSchema;
-
-interface BaseInputSchema {
-  /** 面向错误信息和后续模型适配的字段说明。 */
-  readonly description?: string;
-}
-
-export interface BooleanSchema extends BaseInputSchema {
-  readonly type: "boolean";
-}
-
-export interface IntegerSchema extends BaseInputSchema {
-  readonly type: "integer";
-  readonly minimum?: number;
-  readonly maximum?: number;
-}
-
-export interface StringSchema extends BaseInputSchema {
-  readonly type: "string";
-  readonly minLength?: number;
-  readonly pattern?: string;
-}
-
-export interface ArraySchema extends BaseInputSchema {
-  readonly type: "array";
-  readonly items: ToolInputSchema;
-  readonly minItems?: number;
-  readonly maxItems?: number;
-}
-
-export interface ObjectSchema extends BaseInputSchema {
-  readonly type: "object";
-  readonly properties: Readonly<Record<string, ToolInputSchema>>;
-  readonly required?: readonly string[];
-  readonly additionalProperties?: boolean;
-}
-
-export interface RecordSchema extends BaseInputSchema {
-  readonly type: "record";
-  readonly keyPattern?: string;
-  readonly values: ToolInputSchema;
-}
+/** 工具输入 schema 使用 Zod，便于运行时校验后把 unknown 收窄为工具自己的输入类型。 */
+export type ToolInputSchema = z.ZodType;
 
 /** 工具能力清单。 */
 export interface ToolManifest {
@@ -109,7 +70,7 @@ export interface ToolExecutionPolicy {
   authorize(tool: Tool, input: unknown, context: ToolContext): Promise<void> | void;
 }
 
-export interface Tool {
+export interface Tool<TInput = unknown> {
   /** 工具的稳定名称。 */
   readonly name: string;
   /** 面向模型和调用方的工具说明。 */
@@ -117,9 +78,9 @@ export interface Tool {
   /** 工具声明的能力和安全边界。 */
   readonly manifest?: ToolManifest;
   /** 在执行前生成可供审批查看的预览结果。 */
-  preview?(input: unknown, context: ToolContext): Promise<unknown> | unknown;
+  preview?(input: TInput, context: ToolContext): Promise<unknown> | unknown;
   /** 执行工具并返回结构化或文本结果。 */
-  execute(input: unknown, context: ToolContext): Promise<unknown> | unknown;
+  execute(input: TInput, context: ToolContext): Promise<unknown> | unknown;
 }
 
 /** Agent 运行过程中的可观测事件。 */

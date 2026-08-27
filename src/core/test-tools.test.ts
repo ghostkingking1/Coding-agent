@@ -6,6 +6,7 @@ import test from "node:test";
 import { ApprovalDeniedError, SecurityPolicy, WorkspacePolicy, WorkspaceSecurityError } from "./security.ts";
 import { createRunTestsTool, type RunTestsPreview, type RunTestsResult } from "./test-tools.ts";
 import { ToolRegistry } from "./tool-registry.ts";
+import type { Tool, ToolContext } from "./types.ts";
 
 async function withWorkspace(run: (root: string) => Promise<void>): Promise<void> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "coding-agent-"));
@@ -20,13 +21,17 @@ async function writePackage(root: string, scripts: Record<string, string>): Prom
   await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ type: "module", scripts }, null, 2), "utf8");
 }
 
+async function executeTool(tool: Tool, input: unknown, context: ToolContext = { messages: [] }): Promise<unknown> {
+  return new ToolRegistry().register(tool).execute(tool.name, input, context);
+}
+
 test("run_tests executes the default npm test script", async () => {
   await withWorkspace(async (root) => {
     await writePackage(root, { test: "node ./pass.js" });
     await fs.writeFile(path.join(root, "pass.js"), "console.log('tests passed')\n", "utf8");
     const tool = createRunTestsTool(new WorkspacePolicy({ root }));
 
-    const result = await tool.execute({}, { messages: [] }) as RunTestsResult;
+    const result = await executeTool(tool, {}, { messages: [] }) as RunTestsResult;
 
     assert.equal(result.runner, "npm");
     assert.equal(result.script, "test");
@@ -48,7 +53,7 @@ test("run_tests returns structured failure output", async () => {
     );
     const tool = createRunTestsTool(new WorkspacePolicy({ root }));
 
-    const result = await tool.execute({}, { messages: [] }) as RunTestsResult;
+    const result = await executeTool(tool, {}, { messages: [] }) as RunTestsResult;
 
     assert.equal(result.status, "failed");
     assert.equal(result.passed, false);
@@ -63,7 +68,7 @@ test("run_tests rejects cwd escape attempts", async () => {
     const tool = createRunTestsTool(new WorkspacePolicy({ root }));
 
     await assert.rejects(
-      () => Promise.resolve(tool.execute({ cwd: ".." }, { messages: [] })),
+      () => executeTool(tool, { cwd: ".." }, { messages: [] }),
       WorkspaceSecurityError,
     );
   });
@@ -108,7 +113,7 @@ test("run_tests maps timeouts to timed_out status", async () => {
       maxTimeoutMs: 1000,
     });
 
-    const result = await tool.execute({}, { messages: [] }) as RunTestsResult;
+    const result = await executeTool(tool, {}, { messages: [] }) as RunTestsResult;
 
     assert.equal(result.status, "timed_out");
     assert.equal(result.passed, false);
@@ -124,7 +129,7 @@ test("run_tests only exposes allowlisted environment variables", async () => {
       allowedEnv: ["PATH", "Path", "PATHEXT", "SystemRoot", "ComSpec", "FOO"],
     });
 
-    const result = await tool.execute({
+    const result = await executeTool(tool, {
       env: {
         FOO: "allowed",
         BAR: "blocked",
