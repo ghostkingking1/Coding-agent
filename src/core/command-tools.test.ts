@@ -118,6 +118,22 @@ test("run_command only exposes allowlisted environment variables", async () => {
   });
 });
 
+test("run_command invokes Windows cmd shims without corrupting paths", { skip: process.platform !== "win32" }, async () => {
+  await withWorkspace(async (root) => {
+    const shim = path.join(root, "echo-arg.cmd");
+    await fs.writeFile(shim, "@echo off\r\necho %~1\r\n", "utf8");
+    const tool = createRunCommandTool(new WorkspacePolicy({ root }));
+
+    const result = await tool.execute({
+      command: ".\\echo-arg.cmd",
+      args: ["hello"],
+    }, { messages: [] }) as RunCommandResult;
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout.trim(), "hello");
+  });
+});
+
 test("run_command times out and terminates descendant processes", async () => {
   await withWorkspace(async (root) => {
     const marker = path.join(root, "child-survived.txt");

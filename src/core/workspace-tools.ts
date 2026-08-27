@@ -4,6 +4,7 @@ import { WorkspacePolicy } from "./security.ts";
 import type { Tool } from "./types.ts";
 import { createPatchTool } from "./patch-tools.ts";
 import { createRunCommandTool } from "./command-tools.ts";
+import { createRunTestsTool } from "./test-tools.ts";
 
 /** 创建一组受 WorkspacePolicy 约束的文件读取、搜索、patch 和命令执行工具。 */
 export function createWorkspaceTools(policy: WorkspacePolicy): readonly Tool[] {
@@ -47,6 +48,7 @@ export function createWorkspaceTools(policy: WorkspacePolicy): readonly Tool[] {
     },
     createPatchTool(policy),
     createRunCommandTool(policy),
+    createRunTestsTool(policy),
     {
       name: "search_text",
       description: "Search for a literal string in UTF-8 text files inside the workspace.",

@@ -71,6 +71,12 @@ interface PlannedCommand {
   readonly env: NodeJS.ProcessEnv;
 }
 
+interface SpawnPlan {
+  readonly command: string;
+  readonly args: readonly string[];
+  readonly windowsVerbatimArguments?: boolean;
+}
+
 interface ValidatedRunCommandInput {
   readonly command: string;
   readonly args: readonly string[];
@@ -240,6 +246,7 @@ async function runPlannedCommand(plan: PlannedCommand, context: ToolContext): Pr
       env: plan.env,
       detached: process.platform !== "win32",
       shell: false,
+      windowsVerbatimArguments: spawnPlan.windowsVerbatimArguments,
       windowsHide: true,
     });
 
@@ -287,7 +294,7 @@ async function runPlannedCommand(plan: PlannedCommand, context: ToolContext): Pr
   });
 }
 
-function planSpawn(plan: PlannedCommand): { command: string; args: readonly string[] } {
+function planSpawn(plan: PlannedCommand): SpawnPlan {
   if (process.platform !== "win32") return { command: plan.preview.command, args: plan.preview.args };
   const resolved = resolveWindowsCommand(plan.preview.command, plan.cwdPath, plan.env);
   if (!resolved || !/\.(?:bat|cmd)$/i.test(resolved)) {
@@ -296,7 +303,8 @@ function planSpawn(plan: PlannedCommand): { command: string; args: readonly stri
   /** Windows 批处理文件必须经由 cmd.exe；所有片段都显式引用，避免把整条命令交给模型拼接。 */
   return {
     command: findEnvKey(process.env, "ComSpec") ? process.env[findEnvKey(process.env, "ComSpec") as string] as string : "cmd.exe",
-    args: ["/d", "/s", "/c", [resolved, ...plan.preview.args].map(quoteWindowsArg).join(" ")],
+    args: ["/d", "/s", "/c", quoteWindowsCommand([resolved, ...plan.preview.args])],
+    windowsVerbatimArguments: true,
   };
 }
 
@@ -320,8 +328,14 @@ function resolveWindowsCommand(command: string, cwd: string, env: NodeJS.Process
   return undefined;
 }
 
+function quoteWindowsCommand(parts: readonly string[]): string {
+  /** cmd.exe /s /c 需要外层引号保住带空格路径和后续参数的边界。 */
+  return `"${parts.map(quoteWindowsArg).join(" ")}"`;
+}
+
 function quoteWindowsArg(value: string): string {
-  return `"${value.replace(/(["\\])/g, "\\$1")}"`;
+  /** cmd.exe 不把反斜杠当作转义符；只处理引号，避免破坏 Windows 路径。 */
+  return `"${value.replace(/"/g, "\"\"")}"`;
 }
 
 function terminateProcessTree(child: ChildProcess): void {
