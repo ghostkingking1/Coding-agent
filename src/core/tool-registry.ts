@@ -1,4 +1,5 @@
 import type { Tool, ToolContext, ToolExecutionPolicy } from "./types.ts";
+import { validateToolInput } from "./tool-schema.ts";
 
 /** 注册工具并在执行前统一应用授权策略。 */
 export class ToolRegistry {
@@ -37,6 +38,10 @@ export class ToolRegistry {
     const tool = this.get(name);
     if (!tool) {
       throw new Error(`Unknown tool: ${name}`);
+    }
+    if (tool.manifest?.inputSchema) {
+      /** 输入校验必须早于审批和执行，避免非法参数触发预览、副作用或路径解析。 */
+      validateToolInput(tool.manifest.inputSchema, input);
     }
     await this.policy?.authorize(tool, input, context);
     return tool.execute(input, context);

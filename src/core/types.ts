@@ -4,9 +4,54 @@ export type Role = "system" | "user" | "assistant" | "tool";
 /** 工具声明的能力类型，用于审批和安全策略判断。 */
 export type ToolCapability = "read" | "write" | "execute" | "network";
 
+/** 工具输入 schema 的轻量 JSON Schema 子集。 */
+export type ToolInputSchema = BooleanSchema | IntegerSchema | StringSchema | ArraySchema | ObjectSchema | RecordSchema;
+
+interface BaseInputSchema {
+  /** 面向错误信息和后续模型适配的字段说明。 */
+  readonly description?: string;
+}
+
+export interface BooleanSchema extends BaseInputSchema {
+  readonly type: "boolean";
+}
+
+export interface IntegerSchema extends BaseInputSchema {
+  readonly type: "integer";
+  readonly minimum?: number;
+  readonly maximum?: number;
+}
+
+export interface StringSchema extends BaseInputSchema {
+  readonly type: "string";
+  readonly minLength?: number;
+  readonly pattern?: string;
+}
+
+export interface ArraySchema extends BaseInputSchema {
+  readonly type: "array";
+  readonly items: ToolInputSchema;
+  readonly minItems?: number;
+  readonly maxItems?: number;
+}
+
+export interface ObjectSchema extends BaseInputSchema {
+  readonly type: "object";
+  readonly properties: Readonly<Record<string, ToolInputSchema>>;
+  readonly required?: readonly string[];
+  readonly additionalProperties?: boolean;
+}
+
+export interface RecordSchema extends BaseInputSchema {
+  readonly type: "record";
+  readonly keyPattern?: string;
+  readonly values: ToolInputSchema;
+}
+
 /** 工具能力清单。 */
 export interface ToolManifest {
   readonly capabilities: readonly ToolCapability[];
+  readonly inputSchema?: ToolInputSchema;
 }
 
 /** 在工具产生副作用前提交给审批策略的请求。 */

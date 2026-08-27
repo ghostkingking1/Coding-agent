@@ -1,10 +1,36 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { WorkspacePolicy } from "./security.ts";
-import type { Tool } from "./types.ts";
+import type { Tool, ToolInputSchema } from "./types.ts";
 import { createPatchTool } from "./patch-tools.ts";
 import { createRunCommandTool } from "./command-tools.ts";
 import { createRunTestsTool } from "./test-tools.ts";
+
+const pathSchema: ToolInputSchema = { type: "string", minLength: 1 };
+const readFileInputSchema: ToolInputSchema = {
+  type: "object",
+  properties: { path: pathSchema },
+  required: ["path"],
+  additionalProperties: false,
+};
+const listFilesInputSchema: ToolInputSchema = {
+  type: "object",
+  properties: {
+    path: pathSchema,
+    depth: { type: "integer", minimum: 0, maximum: 8 },
+  },
+  additionalProperties: false,
+};
+const searchTextInputSchema: ToolInputSchema = {
+  type: "object",
+  properties: {
+    query: { type: "string", minLength: 1 },
+    path: pathSchema,
+    maxResults: { type: "integer", minimum: 1, maximum: 1000 },
+  },
+  required: ["query"],
+  additionalProperties: false,
+};
 
 /** 创建一组受 WorkspacePolicy 约束的文件读取、搜索、patch 和命令执行工具。 */
 export function createWorkspaceTools(policy: WorkspacePolicy): readonly Tool[] {
@@ -12,7 +38,7 @@ export function createWorkspaceTools(policy: WorkspacePolicy): readonly Tool[] {
     {
       name: "read_file",
       description: "Read a UTF-8 text file inside the workspace.",
-      manifest: { capabilities: ["read"] },
+      manifest: { capabilities: ["read"], inputSchema: readFileInputSchema },
       async execute(input) {
         const value = input as { path?: unknown };
         const file = policy.resolveFile(value?.path);
@@ -23,7 +49,7 @@ export function createWorkspaceTools(policy: WorkspacePolicy): readonly Tool[] {
     {
       name: "list_files",
       description: "List files and directories inside the workspace.",
-      manifest: { capabilities: ["read"] },
+      manifest: { capabilities: ["read"], inputSchema: listFilesInputSchema },
       async execute(input) {
         const value = (input ?? {}) as { path?: unknown; depth?: unknown };
         const root = policy.resolveDirectory(value.path ?? ".");
@@ -52,7 +78,7 @@ export function createWorkspaceTools(policy: WorkspacePolicy): readonly Tool[] {
     {
       name: "search_text",
       description: "Search for a literal string in UTF-8 text files inside the workspace.",
-      manifest: { capabilities: ["read"] },
+      manifest: { capabilities: ["read"], inputSchema: searchTextInputSchema },
       async execute(input) {
         const value = input as { query?: unknown; path?: unknown; maxResults?: unknown };
         if (typeof value?.query !== "string" || !value.query) throw new Error("query must be a non-empty string");

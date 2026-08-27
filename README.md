@@ -35,6 +35,6 @@ CLI 使用内置 `EchoModel` 演示运行链路。接入真实模型时，实现
 | Coding 工作流 | 已有受限工作区读工具和 patch 工具，仍缺少命令与测试 | 代码搜索、补丁应用、测试运行、结果验证 | 按工具模块逐步接入，并为每个工具配合回归测试 |
 | 交互体验 | CLI 一次性输出 | 流式状态、计划、差异预览、交互式确认 | 设计事件协议和终端 UI |
 
-阶段二的首个切片已经加入受限工作区只读能力：`read_file`、`list_files` 和 `search_text`。这些工具通过 `WorkspacePolicy` 校验真实路径、工作区边界、隐藏路径、文件大小和结果数量；工具也必须声明 capability，写入、执行和网络能力由 `SecurityPolicy` 在副作用发生前审批，默认拒绝。
+阶段二的首个切片已经加入受限工作区只读能力：`read_file`、`list_files` 和 `search_text`。这些工具通过 `WorkspacePolicy` 校验真实路径、工作区边界、隐藏路径、文件大小和结果数量；工具也必须声明 capability 和 input schema，`ToolRegistry` 会在审批和执行前拒绝非法输入，写入、执行和网络能力由 `SecurityPolicy` 在副作用发生前审批，默认拒绝。
 
 当前已提供受限的 `run_command`：命令通过 `spawn` 的 argv 形式执行，不经过 shell 拼接；cwd 必须位于工作区内，执行前需要 `execute` capability 审批，并受超时、stdout/stderr 大小和环境变量白名单限制。超时或取消时会终止子进程树。`run_tests` 在同一安全边界上封装 npm 测试脚本，返回结构化的通过/失败、exit code、stdout、stderr 和耗时，供 Agent 形成读取、修改、测试、修复、再测试闭环。

@@ -1,6 +1,6 @@
 import { createRunCommandTool, type RunCommandPreview, type RunCommandResult, type RunCommandToolOptions } from "./command-tools.ts";
 import type { WorkspacePolicy } from "./security.ts";
-import type { Tool, ToolContext } from "./types.ts";
+import type { Tool, ToolContext, ToolInputSchema } from "./types.ts";
 
 /** run_tests 工具的输入结构。 */
 export interface RunTestsInput {
@@ -61,6 +61,22 @@ interface NormalizedRunTestsInput {
 }
 
 const DEFAULT_TEST_SCRIPT = "test";
+const SAFE_ENV_KEY_PATTERN = "^[A-Za-z_][A-Za-z0-9_]*$";
+const runTestsInputSchema: ToolInputSchema = {
+  type: "object",
+  properties: {
+    script: { type: "string", minLength: 1 },
+    args: { type: "array", items: { type: "string" } },
+    cwd: { type: "string", minLength: 1 },
+    timeoutMs: { type: "integer", minimum: 1 },
+    env: {
+      type: "record",
+      keyPattern: SAFE_ENV_KEY_PATTERN,
+      values: { type: "string" },
+    },
+  },
+  additionalProperties: false,
+};
 
 /** 创建结构化测试工具，底层复用受限命令工具的审批、cwd、超时和输出上限。 */
 export function createRunTestsTool(policy: WorkspacePolicy, options: RunTestsToolOptions = {}): Tool {
@@ -71,7 +87,7 @@ export function createRunTestsTool(policy: WorkspacePolicy, options: RunTestsToo
   return {
     name: "run_tests",
     description: "Run an approved npm test script and return structured pass/fail output for repair loops.",
-    manifest: { capabilities: ["execute"] },
+    manifest: { capabilities: ["execute"], inputSchema: runTestsInputSchema },
     async preview(input, context) {
       const normalized = normalizeRunTestsInput(input, defaultScript);
       return buildRunTestsPreview(await previewCommand(commandTool, normalized, context), normalized);

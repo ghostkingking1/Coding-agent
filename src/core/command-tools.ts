@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { WorkspacePolicy } from "./security.ts";
-import type { Tool, ToolContext } from "./types.ts";
+import type { Tool, ToolContext, ToolInputSchema } from "./types.ts";
 
 /** run_command 工具的输入结构。 */
 export interface RunCommandInput {
@@ -88,6 +88,7 @@ interface ValidatedRunCommandInput {
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_STREAM_BYTES = 64 * 1024;
+const SAFE_ENV_KEY_PATTERN = "^[A-Za-z_][A-Za-z0-9_]*$";
 const DEFAULT_ALLOWED_ENV = [
   "PATH",
   "Path",
@@ -101,6 +102,22 @@ const DEFAULT_ALLOWED_ENV = [
   "APPDATA",
   "LOCALAPPDATA",
 ] as const;
+const runCommandInputSchema: ToolInputSchema = {
+  type: "object",
+  properties: {
+    command: { type: "string", minLength: 1 },
+    args: { type: "array", items: { type: "string" } },
+    cwd: { type: "string", minLength: 1 },
+    timeoutMs: { type: "integer", minimum: 1 },
+    env: {
+      type: "record",
+      keyPattern: SAFE_ENV_KEY_PATTERN,
+      values: { type: "string" },
+    },
+  },
+  required: ["command"],
+  additionalProperties: false,
+};
 
 /** 创建受工作区、审批、超时、输出和环境白名单限制的命令执行工具。 */
 export function createRunCommandTool(policy: WorkspacePolicy, options: RunCommandToolOptions = {}): Tool {
@@ -108,7 +125,7 @@ export function createRunCommandTool(policy: WorkspacePolicy, options: RunComman
   return {
     name: "run_command",
     description: "Run an approved command with workspace cwd, timeout, output limits, and an environment allowlist.",
-    manifest: { capabilities: ["execute"] },
+    manifest: { capabilities: ["execute"], inputSchema: runCommandInputSchema },
     preview(input) {
       return planCommand(policy, limits, input).preview;
     },
@@ -225,7 +242,7 @@ function isAllowedEnvKey(allowedEnv: readonly string[], key: string): boolean {
 }
 
 function isSafeEnvKey(key: string): boolean {
-  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(key);
+  return new RegExp(SAFE_ENV_KEY_PATTERN).test(key);
 }
 
 async function runPlannedCommand(plan: PlannedCommand, context: ToolContext): Promise<RunCommandResult> {

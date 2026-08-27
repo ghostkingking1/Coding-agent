@@ -1,6 +1,7 @@
 export { Agent } from "./core/agent.ts";
 export { ToolRegistry } from "./core/tool-registry.ts";
 export { ApprovalDeniedError, DefaultApprovalPolicy, SecurityPolicy, WorkspacePolicy, WorkspaceSecurityError } from "./core/security.ts";
+export { ToolInputValidationError, validateToolInput } from "./core/tool-schema.ts";
 export { createPatchTool } from "./core/patch-tools.ts";
 export { createRunCommandTool } from "./core/command-tools.ts";
 export { createRunTestsTool } from "./core/test-tools.ts";
@@ -18,6 +19,7 @@ export type {
   ToolCapability,
   ToolContext,
   ToolExecutionPolicy,
+  ToolInputSchema,
   ToolManifest,
   RunEvent,
 } from "./core/types.ts";

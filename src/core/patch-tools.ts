@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import type { WorkspacePolicy } from "./security.ts";
-import type { Tool } from "./types.ts";
+import type { Tool, ToolInputSchema } from "./types.ts";
 
 /** 描述一次基于精确文本匹配的文件变更。 */
 export interface PatchChange {
@@ -48,13 +48,35 @@ interface PlannedPatch {
 
 const MAX_PATCH_CHANGES = 50;
 const MAX_PREVIEW_CHARS = 20_000;
+const patchInputSchema: ToolInputSchema = {
+  type: "object",
+  properties: {
+    changes: {
+      type: "array",
+      minItems: 1,
+      maxItems: MAX_PATCH_CHANGES,
+      items: {
+        type: "object",
+        properties: {
+          path: { type: "string", minLength: 1 },
+          find: { type: "string", minLength: 1 },
+          replaceWith: { type: "string" },
+        },
+        required: ["path", "find", "replaceWith"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["changes"],
+  additionalProperties: false,
+};
 
 /** 创建一个先生成 diff、再由审批策略决定是否执行写入的 patch 工具。 */
 export function createPatchTool(policy: WorkspacePolicy): Tool {
   return {
     name: "apply_patch",
     description: "Preview and apply structured text replacements inside the workspace.",
-    manifest: { capabilities: ["read", "write"] },
+    manifest: { capabilities: ["read", "write"], inputSchema: patchInputSchema },
     async preview(input, context) {
       const plan = await planPatch(policy, input, context);
       return { preview: plan.preview, files: plan.files } satisfies PatchPreview;
