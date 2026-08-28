@@ -11,7 +11,7 @@ npm start -- "请检查这个项目"
 npm test
 ```
 
-CLI 使用内置 `EchoModel` 演示运行链路。接入真实模型时，实现 `Model.generate(messages)`，把模型返回的文本和 `toolCalls` 交给 `Agent` 即可。
+CLI 使用内置 `EchoModel` 演示运行链路。接入真实模型时，实现 `ModelClient.generate(request)`，把统一消息和工具定义转换为供应商请求，再把响应转换为 assistant 消息及其中的 `toolCalls`。
 
 ## 模块边界
 
@@ -27,7 +27,7 @@ CLI 使用内置 `EchoModel` 演示运行链路。接入真实模型时，实现
 
 | 能力 | 当前实现 | 成熟 Agent 常见能力 | 后续方向 |
 | --- | --- | --- | --- |
-| 模型接入 | 单一异步 `Model` 接口 | 多供应商、流式输出、重试、限流、成本统计 | 增加 provider adapter 与 streaming event API |
+| 模型接入 | 供应商无关的异步 `ModelClient` 接口 | 多供应商、流式输出、重试、限流、成本统计 | 增加 provider adapter 与 streaming event API |
 | 工具 | 内存注册表，工具串行执行 | 文件编辑、搜索、终端、网络、并行调用、权限确认 | 建立沙箱工具层、schema 校验和审批策略 |
 | 上下文 | 运行内消息数组 | 压缩、摘要、持久会话、跨轮记忆 | 增加 token 预算和 transcript store |
 | 安全 | 仅传播 `AbortSignal` | 工作区边界、命令风险分级、用户确认、审计 | 设计 capability/approval policy |

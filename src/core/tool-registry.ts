@@ -1,4 +1,4 @@
-import type { Tool, ToolContext, ToolExecutionPolicy } from "./types.ts";
+import type { ModelToolDefinition, Tool, ToolContext, ToolExecutionPolicy } from "./types.ts";
 import { validateToolInput } from "./tool-schema.ts";
 
 /** 注册工具并在执行前统一应用授权策略。 */
@@ -31,6 +31,19 @@ export class ToolRegistry {
   /** 返回当前注册的工具快照。 */
   list(): readonly Tool[] {
     return [...this.tools.values()];
+  }
+
+  /** 返回显式声明 JSON Schema 的工具，避免把本地实现细节或未知参数暴露给模型。 */
+  listModelDefinitions(): readonly ModelToolDefinition[] {
+    return this.list().flatMap((tool) => {
+      const inputSchema = tool.manifest?.modelInputSchema;
+      if (!inputSchema) return [];
+      return [{
+        name: tool.name,
+        description: tool.description,
+        inputSchema,
+      }];
+    });
   }
 
   /** 先授权，再执行指定工具，确保副作用不会绕过策略。 */

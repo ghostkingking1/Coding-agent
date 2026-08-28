@@ -9,10 +9,23 @@ export type ToolCapability = "read" | "write" | "execute" | "network";
 /** 工具输入 schema 使用 Zod，便于运行时校验后把 unknown 收窄为工具自己的输入类型。 */
 export type ToolInputSchema = z.ZodType;
 
+/** 可在模型供应商之间传递的 JSON 值。 */
+export type JsonValue = string | number | boolean | null | JsonObject | readonly JsonValue[];
+
+/** JSON 对象，用于表达模型工具参数 schema。 */
+export interface JsonObject {
+  readonly [key: string]: JsonValue;
+}
+
+/** 面向模型的工具输入 JSON Schema。 */
+export type JsonSchema = JsonObject;
+
 /** 工具能力清单。 */
 export interface ToolManifest {
   readonly capabilities: readonly ToolCapability[];
   readonly inputSchema?: ToolInputSchema;
+  /** 面向模型公开的参数 schema；未声明的工具不会发送给模型。 */
+  readonly modelInputSchema?: JsonSchema;
 }
 
 /** 在工具产生副作用前提交给审批策略的请求。 */
@@ -23,15 +36,10 @@ export interface ApprovalRequest {
   readonly preview?: unknown;
 }
 
-export interface Message {
-  /** 消息发送者。 */
-  role: Role;
+/** 所有消息共有的文本内容。 */
+interface BaseMessage {
   /** 消息正文。 */
-  content: string;
-  /** 关联的工具调用标识。 */
-  toolCallId?: string;
-  /** 关联的工具名称。 */
-  toolName?: string;
+  readonly content: string;
 }
 
 export interface ToolCall {
@@ -43,18 +51,80 @@ export interface ToolCall {
   input: unknown;
 }
 
-export interface ModelResponse {
-  /** 模型生成的 assistant 消息。 */
-  message: Message;
-  /** 模型请求执行的工具调用。 */
-  toolCalls?: ToolCall[];
-  /** 模型本轮结束原因。 */
-  finishReason?: "stop" | "tool_use";
+/** 系统消息。 */
+export interface SystemMessage extends BaseMessage {
+  readonly role: "system";
 }
 
-export interface Model {
-  /** 根据当前消息上下文生成下一步模型响应。 */
-  generate(messages: readonly Message[]): Promise<ModelResponse>;
+/** 用户消息。 */
+export interface UserMessage extends BaseMessage {
+  readonly role: "user";
+}
+
+/** 模型输出的 assistant 消息，工具调用必须随该消息一起保留。 */
+export interface AssistantMessage extends BaseMessage {
+  readonly role: "assistant";
+  readonly toolCalls?: readonly ToolCall[];
+}
+
+/** 关联到一次 assistant 工具调用的执行结果。 */
+export interface ToolMessage extends BaseMessage {
+  readonly role: "tool";
+  readonly toolCallId: string;
+  readonly toolName: string;
+}
+
+/** 统一的对话消息类型。 */
+export type Message = SystemMessage | UserMessage | AssistantMessage | ToolMessage;
+
+/** 供应商适配器标准化后的模型结束原因。 */
+export type ModelFinishReason = "stop" | "tool_use" | "length" | "content_filter" | "unknown";
+
+export interface ModelResponse {
+  /** 模型生成的 assistant 消息。 */
+  readonly message: AssistantMessage;
+  /** 模型本轮结束原因。 */
+  readonly finishReason?: ModelFinishReason;
+}
+
+/** 提供给模型的工具定义，不包含本地执行实现或安全策略。 */
+export interface ModelToolDefinition {
+  /** 工具稳定名称。 */
+  readonly name: string;
+  /** 帮助模型选择工具的说明。 */
+  readonly description: string;
+  /** 模型生成工具参数时使用的 JSON Schema。 */
+  readonly inputSchema: JsonSchema;
+}
+
+/** 模型供应商实现的能力声明。 */
+export interface ModelCapabilities {
+  /** 是否可以请求执行工具。 */
+  readonly toolCalling: boolean;
+  /** 是否支持增量流式响应。 */
+  readonly streaming: boolean;
+}
+
+/** 一次模型调用的供应商无关输入。 */
+export interface ModelRequest {
+  /** 当前完整对话消息。 */
+  readonly messages: readonly Message[];
+  /** 可供模型选择的已声明工具。 */
+  readonly tools: readonly ModelToolDefinition[];
+  /** 取消当前模型请求的信号。 */
+  readonly signal?: AbortSignal;
+}
+
+/** 真实 provider 和测试替身共同实现的统一模型接口。 */
+export interface ModelClient {
+  /** 供应商标识，例如 openai 或 anthropic。 */
+  readonly provider: string;
+  /** 本次调用使用的模型标识。 */
+  readonly model: string;
+  /** 供应商已实现的可选能力。 */
+  readonly capabilities: ModelCapabilities;
+  /** 根据统一请求生成标准化响应。 */
+  generate(request: ModelRequest): Promise<ModelResponse>;
 }
 
 export interface ToolContext {

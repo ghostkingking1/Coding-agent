@@ -1,8 +1,12 @@
-import { Agent, ToolRegistry, type Message, type Model, type ModelResponse } from "./index.ts";
+import { Agent, ToolRegistry, type ModelClient, type ModelRequest, type ModelResponse } from "./index.ts";
 
-class EchoModel implements Model {
-  async generate(messages: readonly Message[]): Promise<ModelResponse> {
-    const prompt = messages.findLast((message) => message.role === "user")?.content ?? "";
+class EchoModel implements ModelClient {
+  readonly provider = "echo";
+  readonly model = "echo";
+  readonly capabilities = { toolCalling: false, streaming: false } as const;
+
+  async generate(request: ModelRequest): Promise<ModelResponse> {
+    const prompt = request.messages.findLast((message) => message.role === "user")?.content ?? "";
     return {
       message: { role: "assistant", content: `Received: ${prompt}` },
       finishReason: "stop",

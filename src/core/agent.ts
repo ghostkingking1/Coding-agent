@@ -3,7 +3,7 @@ import type {
   AgentOptions,
   AgentResult,
   Message,
-  Model,
+  ModelClient,
   ModelResponse,
   ToolCall,
 } from "./types.ts";
@@ -12,12 +12,12 @@ const DEFAULT_MAX_STEPS = 8;
 
 /** 驱动模型、工具和消息上下文之间多轮交互的 Agent 执行器。 */
 export class Agent {
-  private readonly model: Model;
+  private readonly model: ModelClient;
   private readonly tools: ToolRegistry;
   private readonly options: Required<Pick<AgentOptions, "maxSteps">> & Omit<AgentOptions, "maxSteps">;
 
   /** 创建 Agent，并把最大步数归一化为每次运行共享的上限。 */
-  constructor(model: Model, tools = new ToolRegistry(), options: AgentOptions = {}) {
+  constructor(model: ModelClient, tools = new ToolRegistry(), options: AgentOptions = {}) {
     const maxSteps = options.maxSteps ?? DEFAULT_MAX_STEPS;
     if (!Number.isInteger(maxSteps) || maxSteps < 1) {
       throw new Error("maxSteps must be a positive integer");
@@ -46,18 +46,19 @@ export class Agent {
       await this.emit({ type: "model_started", step });
       let response: ModelResponse;
       try {
-        response = await this.model.generate(messages);
+        response = await this.model.generate({
+          messages,
+          tools: this.tools.listModelDefinitions(),
+          signal: this.options.signal,
+        });
       } catch (error) {
         await this.emit({ type: "run_failed", error: error instanceof Error ? error.message : String(error) });
         throw error;
       }
-      const assistantMessage: Message = {
-        role: "assistant",
-        content: response.message.content,
-      };
-      messages.push(assistantMessage);
+      /** 保留原始工具调用，下一轮 provider 才能正确关联对应的 tool result。 */
+      messages.push(response.message);
 
-      const calls = response.toolCalls ?? [];
+      const calls = response.message.toolCalls ?? [];
       if (calls.length === 0) {
         const result = {
           finalText: response.message.content,

@@ -2,10 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Agent } from "./agent.ts";
 import { ToolRegistry } from "./tool-registry.ts";
-import type { Message, Model, ModelResponse, Tool } from "./types.ts";
+import type { Message, ModelClient, ModelRequest, ModelResponse, Tool } from "./types.ts";
+
+const fakeCapabilities = { toolCalling: true, streaming: false } as const;
 
 test("returns a model answer when no tool call is requested", async () => {
-  const model: Model = {
+  const model: ModelClient = {
+    provider: "fake",
+    model: "fake-model",
+    capabilities: fakeCapabilities,
     async generate(): Promise<ModelResponse> {
       return { message: { role: "assistant", content: "done" } };
     },
@@ -19,16 +24,22 @@ test("returns a model answer when no tool call is requested", async () => {
 });
 
 test("executes tool calls and feeds their results back to the model", async () => {
-  const seen: readonly Message[][] = [];
+  const seen: Message[][] = [];
   let calls = 0;
-  const model: Model = {
-    async generate(messages): Promise<ModelResponse> {
-      (seen as Message[][]).push([...messages]);
+  const model: ModelClient = {
+    provider: "fake",
+    model: "fake-model",
+    capabilities: fakeCapabilities,
+    async generate(request): Promise<ModelResponse> {
+      seen.push([...request.messages]);
       calls += 1;
       if (calls === 1) {
         return {
-          message: { role: "assistant", content: "checking" },
-          toolCalls: [{ id: "1", name: "add", input: { a: 2, b: 3 } }],
+          message: {
+            role: "assistant",
+            content: "checking",
+            toolCalls: [{ id: "1", name: "add", input: { a: 2, b: 3 } }],
+          },
           finishReason: "tool_use",
         };
       }
@@ -50,20 +61,34 @@ test("executes tool calls and feeds their results back to the model", async () =
   assert.equal(result.steps, 2);
   assert.equal(seen[1].at(-1)?.content, "5");
   assert.equal(result.messages.find((message) => message.role === "tool")?.content, "5");
+  assert.deepEqual(
+    result.messages.find((message) => message.role === "assistant")?.toolCalls,
+    [{ id: "1", name: "add", input: { a: 2, b: 3 } }],
+  );
+  assert.deepEqual(
+    seen[1].find((message) => message.role === "assistant")?.toolCalls,
+    [{ id: "1", name: "add", input: { a: 2, b: 3 } }],
+  );
 });
 
 test("records tool failures so the model can recover", async () => {
   let calls = 0;
-  const model: Model = {
-    async generate(messages): Promise<ModelResponse> {
+  const model: ModelClient = {
+    provider: "fake",
+    model: "fake-model",
+    capabilities: fakeCapabilities,
+    async generate(request): Promise<ModelResponse> {
       calls += 1;
       if (calls === 1) {
         return {
-          message: { role: "assistant", content: "attempt" },
-          toolCalls: [{ id: "missing", name: "missing", input: null }],
+          message: {
+            role: "assistant",
+            content: "attempt",
+            toolCalls: [{ id: "missing", name: "missing", input: null }],
+          },
         };
       }
-      assert.match(messages.at(-1)?.content ?? "", /Unknown tool/);
+      assert.match(request.messages.at(-1)?.content ?? "", /Unknown tool/);
       return { message: { role: "assistant", content: "recovered" } };
     },
   };
@@ -72,11 +97,17 @@ test("records tool failures so the model can recover", async () => {
 });
 
 test("stops after maxSteps", async () => {
-  const model: Model = {
+  const model: ModelClient = {
+    provider: "fake",
+    model: "fake-model",
+    capabilities: fakeCapabilities,
     async generate(): Promise<ModelResponse> {
       return {
-        message: { role: "assistant", content: "work" },
-        toolCalls: [{ id: "1", name: "noop", input: null }],
+        message: {
+          role: "assistant",
+          content: "work",
+          toolCalls: [{ id: "1", name: "noop", input: null }],
+        },
       };
     },
   };
@@ -89,4 +120,43 @@ test("stops after maxSteps", async () => {
   assert.equal(result.steps, 2);
   assert.equal(result.stopReason, "max_steps");
   assert.equal(result.finalText, "");
+});
+
+test("passes declared model tools and the cancellation signal to the model", async () => {
+  const controller = new AbortController();
+  let request: ModelRequest | undefined;
+  const model: ModelClient = {
+    provider: "fake",
+    model: "fake-model",
+    capabilities: fakeCapabilities,
+    async generate(value): Promise<ModelResponse> {
+      request = value;
+      return { message: { role: "assistant", content: "done" } };
+    },
+  };
+  const registry = new ToolRegistry()
+    .register({
+      name: "visible",
+      description: "Visible tool",
+      manifest: {
+        capabilities: ["read"],
+        modelInputSchema: { type: "object", additionalProperties: false },
+      },
+      execute: () => "ok",
+    })
+    .register({
+      name: "hidden",
+      description: "Hidden tool",
+      manifest: { capabilities: ["read"] },
+      execute: () => "ok",
+    });
+
+  await new Agent(model, registry, { signal: controller.signal }).run("hello");
+
+  assert.strictEqual(request?.signal, controller.signal);
+  assert.deepEqual(request?.tools, [{
+    name: "visible",
+    description: "Visible tool",
+    inputSchema: { type: "object", additionalProperties: false },
+  }]);
 });
