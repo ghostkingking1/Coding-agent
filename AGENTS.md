@@ -69,11 +69,18 @@ docs(agent): document branch and validation workflow
 
 ## 当前路线
 
-按以下顺序推进，每完成一项都应独立测试并提交：
+### 已完成
 
-1. 可预览、可审批的 patch 工具。
-2. 受限 `run_command`：workspace cwd、审批、超时、环境白名单、输出上限和子进程终止。
-3. 结构化 `run_tests`，形成读取、修改、测试、修复、再测试闭环。
-4. 工具 schema 校验、审计、恢复、provider adapter 和流式输出。
+1. 受限工作区读取、可预览可审批的 patch、受限 `run_command` 和结构化 `run_tests`。
+2. Zod 本地输入校验、面向模型的 JSON Schema、工具 capability 和副作用审批。
+3. provider 无关模型契约、受限 HTTP transport、OpenAI-compatible adapter，以及显式配置和逐次模型网络审批。
+
+### 后续顺序
+
+1. 用真实的本地或已授权免费模型完成一次“读取 -> 修改 -> 测试 -> 修复 -> 再测试”的手工验收；此阶段优先修正兼容性问题，不新增抽象。
+2. 增加流式运行事件和 CLI 状态展示，并为模型请求加入有限的重试、退避和错误分类策略。
+3. 增加上下文预算、摘要和持久化审计记录；在此基础上设计 checkpoint 与恢复。
+4. 在统一契约稳定后，再按实际需求增加 Anthropic 和 OpenAI Responses adapter、外部工具协议和 skills。
+5. 在开放更多命令或网络能力前，补充平台级 sandbox、网络策略和更细粒度的管理员策略。
 
 在完成 workspace policy 和审批机制前，不得开放无约束终端或网络工具。
