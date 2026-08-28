@@ -41,11 +41,11 @@
 
 | 能力 | 当前行为 | 位置 |
 | --- | --- | --- |
-| 模型 | `ModelClient.generate(request)` 返回包含可选 tool calls 的 assistant 消息 | `src/core/types.ts` |
-| 循环 | 每步生成；有调用则串行执行并回传；无调用即结束 | `src/core/agent.ts` |
-| 工具 | 进程内 `ToolRegistry`，按名称注册/查找/执行 | `src/core/tool-registry.ts` |
-| 错误 | 异常变成 `{ error }` tool 消息 | `src/core/agent.ts` |
-| 保护 | 默认最多 8 步；每步开始检查 `AbortSignal` | `src/core/agent.ts` |
+| 模型 | `ModelClient.generate(request)` 返回包含可选 tool calls 的 assistant 消息 | `src/agent/types.ts` |
+| 循环 | 每步生成；有调用则串行执行并回传；无调用即结束 | `src/agent/agent.ts` |
+| 工具 | 进程内 `ToolRegistry`，按名称注册/查找/执行 | `src/tools/tool-registry.ts` |
+| 错误 | 异常变成 `{ error }` tool 消息 | `src/agent/agent.ts` |
+| 保护 | 默认最多 8 步；每步开始检查 `AbortSignal` | `src/agent/agent.ts` |
 | 缺失 | 无文件、搜索、patch、终端、测试、持久化、审批、沙箱和审计 | 全局 |
 
 已有测试覆盖直接完成、工具往返、未知工具恢复和最大步数；没有真实文件系统或命令执行测试。

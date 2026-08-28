@@ -13,11 +13,11 @@
 
 核心入口：
 
-- `src/core/types.ts`：公共类型、工具 capability/manifest、运行事件
-- `src/core/agent.ts`：Agent 执行循环
-- `src/core/tool-registry.ts`：工具注册和执行策略
-- `src/core/security.ts`：workspace 边界和审批策略
-- `src/core/workspace-tools.ts`：`read_file`、`list_files`、`search_text`
+- `src/agent/types.ts`：公共类型、工具 capability/manifest、运行事件
+- `src/agent/agent.ts`：Agent 执行循环
+- `src/tools/tool-registry.ts`：工具注册和执行策略
+- `src/tools/security.ts`：workspace 边界和审批策略
+- `src/tools/workspace-tools.ts`：`read_file`、`list_files`、`search_text`
 - `docs/official-coding-agent-gap-analysis.md`：能力差距和路线图
 
 ## 开发流程

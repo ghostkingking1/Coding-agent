@@ -7,7 +7,7 @@ import type {
   ModelResponse,
   ModelToolDefinition,
   ToolCall,
-} from "../core/types.ts";
+} from "../agent/types.ts";
 import { FetchHttpTransport, type HttpTransport } from "./transport.ts";
 
 /** OpenAI-compatible 响应不符合本项目所需结构时抛出的错误。 */

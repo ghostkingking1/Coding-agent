@@ -1,4 +1,4 @@
-import type { ModelCapabilities, ModelClient, ModelRequest, ModelResponse, Role } from "../core/types.ts";
+import type { ModelCapabilities, ModelClient, ModelRequest, ModelResponse, Role } from "../agent/types.ts";
 
 /** 发起模型网络请求前提供给审批方的非敏感摘要。 */
 export interface ModelApprovalRequest {

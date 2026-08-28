@@ -5,7 +5,7 @@ import { listFilesModelInputSchema, readFileModelInputSchema, searchTextModelInp
 import { WorkspacePolicy } from "./security.ts";
 import { pathInputSchema } from "./tool-input-schemas.ts";
 import { defineTool } from "./tool-schema.ts";
-import type { Tool } from "./types.ts";
+import type { Tool } from "../agent/types.ts";
 import { createPatchTool } from "./patch-tools.ts";
 import { createRunCommandTool } from "./command-tools.ts";
 import { createRunTestsTool } from "./test-tools.ts";

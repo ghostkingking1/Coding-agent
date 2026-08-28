@@ -6,7 +6,7 @@ import test from "node:test";
 import { ApprovalDeniedError, SecurityPolicy, WorkspacePolicy, WorkspaceSecurityError } from "./security.ts";
 import { createRunTestsTool, type RunTestsPreview, type RunTestsResult } from "./test-tools.ts";
 import { ToolRegistry } from "./tool-registry.ts";
-import type { Tool, ToolContext } from "./types.ts";
+import type { Tool, ToolContext } from "../agent/types.ts";
 
 async function withWorkspace(run: (root: string) => Promise<void>): Promise<void> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "coding-agent-"));

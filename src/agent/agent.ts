@@ -1,4 +1,4 @@
-import { ToolRegistry } from "./tool-registry.ts";
+import { ToolRegistry } from "../tools/tool-registry.ts";
 import type {
   AgentOptions,
   AgentResult,

@@ -4,7 +4,7 @@ import { createRunTestsModelInputSchema } from "./model-tool-schemas.ts";
 import type { WorkspacePolicy } from "./security.ts";
 import { argsInputSchema, envInputSchema, singleLineTextSchema } from "./tool-input-schemas.ts";
 import { defineTool, validateToolInput } from "./tool-schema.ts";
-import type { Tool, ToolContext } from "./types.ts";
+import type { Tool, ToolContext } from "../agent/types.ts";
 
 /** run_tests 工具的安全和资源限制配置。 */
 export interface RunTestsToolOptions extends RunCommandToolOptions {

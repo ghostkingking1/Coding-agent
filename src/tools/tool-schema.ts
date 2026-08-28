@@ -1,5 +1,5 @@
 import { z, ZodError } from "zod";
-import type { JsonSchema, Tool, ToolCapability, ToolContext, ToolInputSchema } from "./types.ts";
+import type { JsonSchema, Tool, ToolCapability, ToolContext, ToolInputSchema } from "../agent/types.ts";
 
 /** 工具输入不符合 schema 时抛出的错误。 */
 export class ToolInputValidationError extends Error {

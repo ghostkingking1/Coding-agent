@@ -1,17 +1,17 @@
-export { Agent } from "./core/agent.ts";
-export { ToolRegistry } from "./core/tool-registry.ts";
-export { ApprovalDeniedError, DefaultApprovalPolicy, SecurityPolicy, WorkspacePolicy, WorkspaceSecurityError } from "./core/security.ts";
-export { defineTool, ToolInputValidationError, validateToolInput } from "./core/tool-schema.ts";
-export { createPatchTool } from "./core/patch-tools.ts";
-export { createRunCommandTool } from "./core/command-tools.ts";
-export { createRunTestsTool } from "./core/test-tools.ts";
-export { createWorkspaceTools } from "./core/workspace-tools.ts";
+export { Agent } from "./agent/agent.ts";
+export { ToolRegistry } from "./tools/tool-registry.ts";
+export { ApprovalDeniedError, DefaultApprovalPolicy, SecurityPolicy, WorkspacePolicy, WorkspaceSecurityError } from "./tools/security.ts";
+export { defineTool, ToolInputValidationError, validateToolInput } from "./tools/tool-schema.ts";
+export { createPatchTool } from "./tools/patch-tools.ts";
+export { createRunCommandTool } from "./tools/command-tools.ts";
+export { createRunTestsTool } from "./tools/test-tools.ts";
+export { createWorkspaceTools } from "./tools/workspace-tools.ts";
 export { ModelTransportError } from "./model/errors.ts";
 export { FetchHttpTransport } from "./model/transport.ts";
 export { OpenAICompatibleModel, OpenAICompatibleResponseError } from "./model/openai-compatible.ts";
 export { ApprovedModelClient, DefaultModelApprovalPolicy, ModelApprovalDeniedError } from "./model/approval.ts";
 export { createConfiguredModelClient, readModelRuntimeConfig } from "./model/runtime-config.ts";
-export { argsInputSchema, envInputSchema, pathInputSchema, singleLineTextSchema, stringWithoutNullByteSchema } from "./core/tool-input-schemas.ts";
+export { argsInputSchema, envInputSchema, pathInputSchema, singleLineTextSchema, stringWithoutNullByteSchema } from "./tools/tool-input-schemas.ts";
 export type {
   ApprovalRequest,
   AgentOptions,
@@ -39,13 +39,13 @@ export type {
   ToolMessage,
   UserMessage,
   RunEvent,
-} from "./core/types.ts";
-export type { ToolDefinition } from "./core/tool-schema.ts";
+} from "./agent/types.ts";
+export type { ToolDefinition } from "./tools/tool-schema.ts";
 export type { ModelTransportErrorCode, ModelTransportErrorOptions } from "./model/errors.ts";
 export type { FetchHttpTransportOptions, FetchLike, HttpRequest, HttpResponse, HttpTransport } from "./model/transport.ts";
 export type { OpenAICompatibleModelOptions } from "./model/openai-compatible.ts";
 export type { ModelApprovalPolicy, ModelApprovalRequest } from "./model/approval.ts";
 export type { ModelRuntimeConfig, ModelRuntimeOptions, OpenAICompatibleRuntimeConfig } from "./model/runtime-config.ts";
-export type { PatchChange, PatchFileResult, PatchInput, PatchPreview, PatchResult } from "./core/patch-tools.ts";
-export type { RunCommandInput, RunCommandPreview, RunCommandResult, RunCommandToolOptions } from "./core/command-tools.ts";
-export type { RunTestsInput, RunTestsPreview, RunTestsResult, RunTestsToolOptions } from "./core/test-tools.ts";
+export type { PatchChange, PatchFileResult, PatchInput, PatchPreview, PatchResult } from "./tools/patch-tools.ts";
+export type { RunCommandInput, RunCommandPreview, RunCommandResult, RunCommandToolOptions } from "./tools/command-tools.ts";
+export type { RunTestsInput, RunTestsPreview, RunTestsResult, RunTestsToolOptions } from "./tools/test-tools.ts";

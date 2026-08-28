@@ -1,4 +1,4 @@
-import type { ModelToolDefinition, Tool, ToolContext, ToolExecutionPolicy } from "./types.ts";
+import type { ModelToolDefinition, Tool, ToolContext, ToolExecutionPolicy } from "../agent/types.ts";
 import { validateToolInput } from "./tool-schema.ts";
 
 /** 注册工具并在执行前统一应用授权策略。 */

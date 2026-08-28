@@ -1,4 +1,4 @@
-import type { JsonSchema } from "./types.ts";
+import type { JsonSchema } from "../agent/types.ts";
 
 const workspacePathSchema: JsonSchema = {
   type: "string",

@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { ApprovalRequest, Tool, ToolContext, ToolExecutionPolicy } from "./types.ts";
+import type { ApprovalRequest, Tool, ToolContext, ToolExecutionPolicy } from "../agent/types.ts";
 
 /** 工作区路径和资源限制的配置。 */
 export interface WorkspacePolicyOptions {

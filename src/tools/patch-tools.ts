@@ -4,7 +4,7 @@ import { applyPatchModelInputSchema } from "./model-tool-schemas.ts";
 import type { WorkspacePolicy } from "./security.ts";
 import { pathInputSchema, stringWithoutNullByteSchema } from "./tool-input-schemas.ts";
 import { defineTool } from "./tool-schema.ts";
-import type { Tool } from "./types.ts";
+import type { Tool } from "../agent/types.ts";
 
 /** 单个文件在 patch 中的变更摘要。 */
 export interface PatchFileResult {

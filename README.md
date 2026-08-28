@@ -37,10 +37,10 @@ npm start -- "检查测试失败并修复"
 
 ## 模块边界
 
-- `src/core/types.ts`：模型、消息、工具和运行结果的稳定契约。
-- `src/core/tool-registry.ts`：工具注册、查找和执行。
-- `src/core/agent.ts`：`user -> model -> tool calls -> tool results -> model` 循环，带最大步数、取消信号和工具错误回传。
-- `src/core/workspace-tools.ts` / `src/core/patch-tools.ts` / `src/core/command-tools.ts`：受限工作区读工具、可预览可审批的 patch 工具和命令执行工具。
+- `src/agent/types.ts`：模型、消息、工具和运行结果的稳定契约。
+- `src/agent/agent.ts`：`user -> model -> tool calls -> tool results -> model` 循环，带最大步数、取消信号和工具错误回传。
+- `src/tools/tool-registry.ts`：工具注册、查找和执行。
+- `src/tools/workspace-tools.ts` / `src/tools/patch-tools.ts` / `src/tools/command-tools.ts`：受限工作区读工具、可预览可审批的 patch 工具和命令执行工具。
 - `src/cli.ts`：无外部服务的可运行演示入口。
 
 ## 与成熟 Coding Agent 的差距

@@ -1,4 +1,4 @@
-import type { ModelClient } from "../core/types.ts";
+import type { ModelClient } from "../agent/types.ts";
 import { DefaultModelApprovalPolicy, ApprovedModelClient, type ModelApprovalPolicy, type ModelApprovalRequest } from "./approval.ts";
 import { OpenAICompatibleModel } from "./openai-compatible.ts";
 import type { HttpTransport } from "./transport.ts";
