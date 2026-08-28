@@ -15,6 +15,8 @@ CLI 使用内置 `EchoModel` 演示运行链路。接入真实模型时，实现
 
 `FetchHttpTransport` 为 provider adapter 提供统一的 HTTP 超时、取消、响应大小限制、错误分类和 JSON 解析；adapter 负责各供应商协议转换。实际网络调用仍应由后续 provider 的配置和审批边界控制。
 
+`OpenAICompatibleModel` 是第一个非流式 provider adapter，使用 Chat Completions 风格的文本和函数工具调用协议。它需要显式 `baseUrl`，可选接收 `apiKey` 或自定义 `HttpTransport`，不会自动读取环境变量或切换 CLI 的内置演示模型。
+
 ## 模块边界
 
 - `src/core/types.ts`：模型、消息、工具和运行结果的稳定契约。

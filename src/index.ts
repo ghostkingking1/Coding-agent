@@ -8,6 +8,7 @@ export { createRunTestsTool } from "./core/test-tools.ts";
 export { createWorkspaceTools } from "./core/workspace-tools.ts";
 export { ModelTransportError } from "./model/errors.ts";
 export { FetchHttpTransport } from "./model/transport.ts";
+export { OpenAICompatibleModel, OpenAICompatibleResponseError } from "./model/openai-compatible.ts";
 export { argsInputSchema, envInputSchema, pathInputSchema, singleLineTextSchema, stringWithoutNullByteSchema } from "./core/tool-input-schemas.ts";
 export type {
   ApprovalRequest,
@@ -40,6 +41,7 @@ export type {
 export type { ToolDefinition } from "./core/tool-schema.ts";
 export type { ModelTransportErrorCode, ModelTransportErrorOptions } from "./model/errors.ts";
 export type { FetchHttpTransportOptions, FetchLike, HttpRequest, HttpResponse, HttpTransport } from "./model/transport.ts";
+export type { OpenAICompatibleModelOptions } from "./model/openai-compatible.ts";
 export type { PatchChange, PatchFileResult, PatchInput, PatchPreview, PatchResult } from "./core/patch-tools.ts";
 export type { RunCommandInput, RunCommandPreview, RunCommandResult, RunCommandToolOptions } from "./core/command-tools.ts";
 export type { RunTestsInput, RunTestsPreview, RunTestsResult, RunTestsToolOptions } from "./core/test-tools.ts";
