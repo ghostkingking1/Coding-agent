@@ -19,13 +19,17 @@ CLI 使用内置 `EchoModel` 演示运行链路。接入真实模型时，实现
 
 ## 真实模型运行
 
-CLI 默认继续使用不联网的 `EchoModel`。只有完整设置下列环境变量时，才会创建受审批保护的 OpenAI-compatible 模型和工作区工具：
+CLI 默认继续使用不联网的 `EchoModel`。`npm start` 会自动读取本机 `.env`；仓库提供 [`.env.example`](.env.example) 作为模板，实际 `.env` 已被 Git 忽略，不能提交 API key。填写完整配置后，CLI 才会创建受审批保护的 OpenAI-compatible 模型和工作区工具：
+
+```dotenv
+CODING_AGENT_MODEL_PROVIDER=openai-compatible
+CODING_AGENT_MODEL_BASE_URL=http://127.0.0.1:11434/v1
+CODING_AGENT_MODEL=your-tool-capable-local-model
+```
 
 ```powershell
-$env:CODING_AGENT_MODEL_PROVIDER = "openai-compatible"
-$env:CODING_AGENT_MODEL_BASE_URL = "http://127.0.0.1:11434/v1"
-$env:CODING_AGENT_MODEL = "your-tool-capable-local-model"
-$env:CODING_AGENT_MODEL_API_KEY = ""
+# 仅首次根据模板创建本机配置文件。
+Copy-Item .env.example .env
 npm start -- "检查测试失败并修复"
 ```
 
