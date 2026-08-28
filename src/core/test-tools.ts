@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { createRunCommandTool, type RunCommandInput, type RunCommandPreview, type RunCommandResult, type RunCommandToolOptions } from "./command-tools.ts";
+import { createRunCommandTool, DEFAULT_MAX_COMMAND_TIMEOUT_MS, type RunCommandInput, type RunCommandPreview, type RunCommandResult, type RunCommandToolOptions } from "./command-tools.ts";
+import { createRunTestsModelInputSchema } from "./model-tool-schemas.ts";
 import type { WorkspacePolicy } from "./security.ts";
 import { argsInputSchema, envInputSchema, singleLineTextSchema } from "./tool-input-schemas.ts";
 import { defineTool, validateToolInput } from "./tool-schema.ts";
@@ -73,6 +74,7 @@ export function createRunTestsTool(policy: WorkspacePolicy, options: RunTestsToo
     description: "Run an approved npm test script and return structured pass/fail output for repair loops.",
     capabilities: ["execute"],
     inputSchema: runTestsInputSchema,
+    modelInputSchema: createRunTestsModelInputSchema(defaultScript, options.maxTimeoutMs ?? DEFAULT_MAX_COMMAND_TIMEOUT_MS),
     async preview(input, context) {
       return buildRunTestsPreview(await previewCommand(commandTool, input, context), input);
     },

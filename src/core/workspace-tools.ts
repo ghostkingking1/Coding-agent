@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
+import { listFilesModelInputSchema, readFileModelInputSchema, searchTextModelInputSchema } from "./model-tool-schemas.ts";
 import { WorkspacePolicy } from "./security.ts";
 import { pathInputSchema } from "./tool-input-schemas.ts";
 import { defineTool } from "./tool-schema.ts";
@@ -28,6 +29,7 @@ export function createWorkspaceTools(policy: WorkspacePolicy): readonly Tool[] {
       description: "Read a UTF-8 text file inside the workspace.",
       capabilities: ["read"],
       inputSchema: readFileInputSchema,
+      modelInputSchema: readFileModelInputSchema,
       async execute(input) {
         const file = policy.resolveFile(input.path);
         const content = await fs.readFile(file.path, "utf8");
@@ -39,6 +41,7 @@ export function createWorkspaceTools(policy: WorkspacePolicy): readonly Tool[] {
       description: "List files and directories inside the workspace.",
       capabilities: ["read"],
       inputSchema: listFilesInputSchema,
+      modelInputSchema: listFilesModelInputSchema,
       async execute(input) {
         const root = policy.resolveDirectory(input.path);
         const entries: string[] = [];
@@ -66,6 +69,7 @@ export function createWorkspaceTools(policy: WorkspacePolicy): readonly Tool[] {
       description: "Search for a literal string in UTF-8 text files inside the workspace.",
       capabilities: ["read"],
       inputSchema: searchTextInputSchema,
+      modelInputSchema: searchTextModelInputSchema,
       async execute(input) {
         const root = policy.resolveDirectory(input.path);
         const results: Array<{ path: string; line: number; text: string }> = [];

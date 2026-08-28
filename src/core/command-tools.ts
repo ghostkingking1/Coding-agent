@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import { createRunCommandModelInputSchema } from "./model-tool-schemas.ts";
 import { WorkspacePolicy } from "./security.ts";
 import { argsInputSchema, envInputSchema, singleLineTextSchema } from "./tool-input-schemas.ts";
 import { defineTool } from "./tool-schema.ts";
@@ -67,7 +68,8 @@ interface SpawnPlan {
 }
 
 const DEFAULT_TIMEOUT_MS = 10_000;
-const DEFAULT_MAX_TIMEOUT_MS = 120_000;
+/** 命令和测试工具共享的默认最大超时，避免模型 schema 与实际执行限制漂移。 */
+export const DEFAULT_MAX_COMMAND_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_STREAM_BYTES = 64 * 1024;
 const DEFAULT_ALLOWED_ENV = [
   "PATH",
@@ -102,6 +104,7 @@ export function createRunCommandTool(policy: WorkspacePolicy, options: RunComman
     description: "Run an approved command with workspace cwd, timeout, output limits, and an environment allowlist.",
     capabilities: ["execute"],
     inputSchema: runCommandInputSchema,
+    modelInputSchema: createRunCommandModelInputSchema(limits.maxTimeoutMs),
     preview(input) {
       return planCommand(policy, limits, input).preview;
     },
@@ -114,7 +117,7 @@ export function createRunCommandTool(policy: WorkspacePolicy, options: RunComman
 
 function normalizeOptions(options: RunCommandToolOptions): NormalizedRunCommandOptions {
   const defaultTimeoutMs = options.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const maxTimeoutMs = options.maxTimeoutMs ?? DEFAULT_MAX_TIMEOUT_MS;
+  const maxTimeoutMs = options.maxTimeoutMs ?? DEFAULT_MAX_COMMAND_TIMEOUT_MS;
   const maxStdoutBytes = options.maxStdoutBytes ?? DEFAULT_MAX_STREAM_BYTES;
   const maxStderrBytes = options.maxStderrBytes ?? DEFAULT_MAX_STREAM_BYTES;
   assertPositiveInteger(defaultTimeoutMs, "defaultTimeoutMs");

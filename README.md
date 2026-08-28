@@ -11,7 +11,7 @@ npm start -- "请检查这个项目"
 npm test
 ```
 
-CLI 使用内置 `EchoModel` 演示运行链路。接入真实模型时，实现 `ModelClient.generate(request)`，把统一消息和工具定义转换为供应商请求，再把响应转换为 assistant 消息及其中的 `toolCalls`。
+CLI 使用内置 `EchoModel` 演示运行链路。接入真实模型时，实现 `ModelClient.generate(request)`，把统一消息和工具定义转换为供应商请求，再把响应转换为 assistant 消息及其中的 `toolCalls`。工具分别声明给模型的 JSON Schema 和本地 Zod 校验，前者帮助模型生成参数，后者仍是执行前不可绕过的安全检查。
 
 ## 模块边界
 

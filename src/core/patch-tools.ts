@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import { z } from "zod";
+import { applyPatchModelInputSchema } from "./model-tool-schemas.ts";
 import type { WorkspacePolicy } from "./security.ts";
 import { pathInputSchema, stringWithoutNullByteSchema } from "./tool-input-schemas.ts";
 import { defineTool } from "./tool-schema.ts";
@@ -57,6 +58,7 @@ export function createPatchTool(policy: WorkspacePolicy): Tool {
     description: "Preview and apply structured text replacements inside the workspace.",
     capabilities: ["read", "write"],
     inputSchema: patchInputSchema,
+    modelInputSchema: applyPatchModelInputSchema,
     async preview(input, context) {
       const plan = await planPatch(policy, input, context);
       return { preview: plan.preview, files: plan.files } satisfies PatchPreview;

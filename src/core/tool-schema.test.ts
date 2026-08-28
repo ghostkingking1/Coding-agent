@@ -5,6 +5,8 @@ import path from "node:path";
 import test from "node:test";
 import { z } from "zod";
 import { ApprovalDeniedError, SecurityPolicy, WorkspacePolicy } from "./security.ts";
+import { createRunCommandTool } from "./command-tools.ts";
+import { createRunTestsTool } from "./test-tools.ts";
 import { defineTool, ToolInputValidationError, validateToolInput } from "./tool-schema.ts";
 import { ToolRegistry } from "./tool-registry.ts";
 import { createWorkspaceTools } from "./workspace-tools.ts";
@@ -108,6 +110,59 @@ test("workspace tools expose input schemas", async () => {
   });
 });
 
+test("workspace tools expose JSON schemas for model tool calls", async () => {
+  await withWorkspace(async (root) => {
+    const policy = new WorkspacePolicy({ root });
+    const registry = new ToolRegistry();
+    for (const tool of createWorkspaceTools(policy)) registry.register(tool);
+
+    const definitions = registry.listModelDefinitions();
+    assert.deepEqual(definitions.map((definition) => definition.name), [
+      "read_file",
+      "list_files",
+      "apply_patch",
+      "run_command",
+      "run_tests",
+      "search_text",
+    ]);
+    for (const definition of definitions) {
+      assert.equal(schemaObject(definition.inputSchema).additionalProperties, false, `${definition.name} should reject extra fields`);
+    }
+
+    const byName = new Map(definitions.map((definition) => [definition.name, definition.inputSchema]));
+    assert.deepEqual(schemaObject(byName.get("read_file")).required, ["path"]);
+    assert.deepEqual(schemaProperty(byName.get("list_files"), "depth"), {
+      type: "integer",
+      minimum: 0,
+      maximum: 8,
+      default: 2,
+    });
+    assert.deepEqual(schemaObject(byName.get("search_text")).required, ["query"]);
+
+    const changes = schemaProperty(byName.get("apply_patch"), "changes");
+    assert.equal(changes.maxItems, 50);
+    assert.deepEqual(schemaObject(changes.items).required, ["path", "find", "replaceWith"]);
+
+    assert.deepEqual(schemaObject(byName.get("run_command")).required, ["command"]);
+    assert.equal(schemaProperty(byName.get("run_command"), "timeoutMs").maximum, 120_000);
+    assert.equal(schemaObject(byName.get("run_tests")).required, undefined);
+    assert.equal(schemaProperty(byName.get("run_tests"), "script").default, "test");
+    assert.equal(schemaProperty(byName.get("run_tests"), "timeoutMs").maximum, 120_000);
+  });
+});
+
+test("command and test model schemas use their configured limits and defaults", async () => {
+  await withWorkspace(async (root) => {
+    const policy = new WorkspacePolicy({ root });
+    const command = createRunCommandTool(policy, { defaultTimeoutMs: 45, maxTimeoutMs: 45 });
+    const tests = createRunTestsTool(policy, { defaultScript: "verify", defaultTimeoutMs: 45, maxTimeoutMs: 45 });
+
+    assert.equal(schemaProperty(command.manifest?.modelInputSchema, "timeoutMs").maximum, 45);
+    assert.equal(schemaProperty(tests.manifest?.modelInputSchema, "timeoutMs").maximum, 45);
+    assert.equal(schemaProperty(tests.manifest?.modelInputSchema, "script").default, "verify");
+  });
+});
+
 test("read workspace tool schemas reject invalid inputs before path resolution", async () => {
   await withWorkspace(async (root) => {
     const registry = new ToolRegistry(new SecurityPolicy());
@@ -156,3 +211,15 @@ test("side-effect tool schemas reject invalid inputs before approval preview", a
     assert.equal(approvalRequests, 0);
   });
 });
+
+function schemaObject(value: unknown): Readonly<Record<string, unknown>> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Expected JSON Schema object");
+  }
+  return value as Readonly<Record<string, unknown>>;
+}
+
+function schemaProperty(schema: unknown, name: string): Readonly<Record<string, unknown>> {
+  const properties = schemaObject(schemaObject(schema).properties);
+  return schemaObject(properties[name]);
+}
