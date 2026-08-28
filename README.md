@@ -13,6 +13,8 @@ npm test
 
 CLI 使用内置 `EchoModel` 演示运行链路。接入真实模型时，实现 `ModelClient.generate(request)`，把统一消息和工具定义转换为供应商请求，再把响应转换为 assistant 消息及其中的 `toolCalls`。工具分别声明给模型的 JSON Schema 和本地 Zod 校验，前者帮助模型生成参数，后者仍是执行前不可绕过的安全检查。
 
+`FetchHttpTransport` 为 provider adapter 提供统一的 HTTP 超时、取消、响应大小限制、错误分类和 JSON 解析；adapter 负责各供应商协议转换。实际网络调用仍应由后续 provider 的配置和审批边界控制。
+
 ## 模块边界
 
 - `src/core/types.ts`：模型、消息、工具和运行结果的稳定契约。
