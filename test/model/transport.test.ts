@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ModelTransportError } from "./errors.ts";
-import { FetchHttpTransport, type FetchLike } from "./transport.ts";
+import { ModelTransportError } from "../../src/model/errors.ts";
+import { FetchHttpTransport, type FetchLike } from "../../src/model/transport.ts";
 
 test("returns bounded successful responses and preserves request metadata", async () => {
   let seenSignal: AbortSignal | null | undefined;

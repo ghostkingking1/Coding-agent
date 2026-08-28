@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ApprovedModelClient, DefaultModelApprovalPolicy, ModelApprovalDeniedError } from "./approval.ts";
-import type { ModelClient, ModelRequest, ModelResponse } from "../agent/types.ts";
+import { ApprovedModelClient, DefaultModelApprovalPolicy, ModelApprovalDeniedError } from "../../src/model/approval.ts";
+import type { ModelClient, ModelRequest, ModelResponse } from "../../src/agent/types.ts";
 
 function createFakeModel(): { client: ModelClient; requests: ModelRequest[] } {
   const requests: ModelRequest[] = [];

@@ -4,12 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { z } from "zod";
-import { ApprovalDeniedError, SecurityPolicy, WorkspacePolicy } from "./security.ts";
-import { createRunCommandTool } from "./command-tools.ts";
-import { createRunTestsTool } from "./test-tools.ts";
-import { defineTool, ToolInputValidationError, validateToolInput } from "./tool-schema.ts";
-import { ToolRegistry } from "./tool-registry.ts";
-import { createWorkspaceTools } from "./workspace-tools.ts";
+import { ApprovalDeniedError, SecurityPolicy, WorkspacePolicy } from "../../src/tools/security.ts";
+import { createRunCommandTool } from "../../src/tools/command-tools.ts";
+import { createRunTestsTool } from "../../src/tools/test-tools.ts";
+import { defineTool, ToolInputValidationError, validateToolInput } from "../../src/tools/tool-schema.ts";
+import { ToolRegistry } from "../../src/tools/tool-registry.ts";
+import { createWorkspaceTools } from "../../src/tools/workspace-tools.ts";
 
 const sampleSchema = z.object({
   path: z.string().min(1),

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { DefaultModelApprovalPolicy, ModelApprovalDeniedError } from "./approval.ts";
-import { createConfiguredModelClient, readModelRuntimeConfig } from "./runtime-config.ts";
-import type { HttpRequest, HttpResponse, HttpTransport } from "./transport.ts";
+import { DefaultModelApprovalPolicy, ModelApprovalDeniedError } from "../../src/model/approval.ts";
+import { createConfiguredModelClient, readModelRuntimeConfig } from "../../src/model/runtime-config.ts";
+import type { HttpRequest, HttpResponse, HttpTransport } from "../../src/model/transport.ts";
 
 class FakeTransport implements HttpTransport {
   requests: HttpRequest[] = [];

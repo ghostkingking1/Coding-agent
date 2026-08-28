@@ -3,10 +3,10 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createRunCommandTool, type RunCommandPreview, type RunCommandResult } from "./command-tools.ts";
-import { ApprovalDeniedError, SecurityPolicy, WorkspacePolicy, WorkspaceSecurityError } from "./security.ts";
-import { ToolRegistry } from "./tool-registry.ts";
-import type { Tool, ToolContext } from "../agent/types.ts";
+import { createRunCommandTool, type RunCommandPreview, type RunCommandResult } from "../../src/tools/command-tools.ts";
+import { ApprovalDeniedError, SecurityPolicy, WorkspacePolicy, WorkspaceSecurityError } from "../../src/tools/security.ts";
+import { ToolRegistry } from "../../src/tools/tool-registry.ts";
+import type { Tool, ToolContext } from "../../src/agent/types.ts";
 
 async function withWorkspace(run: (root: string) => Promise<void>): Promise<void> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "coding-agent-"));

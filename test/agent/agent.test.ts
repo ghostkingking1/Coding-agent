@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { Agent } from "./agent.ts";
-import { ToolRegistry } from "../tools/tool-registry.ts";
-import type { Message, ModelClient, ModelRequest, ModelResponse, Tool } from "./types.ts";
+import { Agent } from "../../src/agent/agent.ts";
+import { ToolRegistry } from "../../src/tools/tool-registry.ts";
+import type { Message, ModelClient, ModelRequest, ModelResponse, Tool } from "../../src/agent/types.ts";
 
 const fakeCapabilities = { toolCalling: true, streaming: false } as const;
 

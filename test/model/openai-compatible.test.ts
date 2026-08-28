@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { HttpRequest, HttpResponse, HttpTransport } from "./transport.ts";
-import { OpenAICompatibleModel, OpenAICompatibleResponseError } from "./openai-compatible.ts";
+import type { HttpRequest, HttpResponse, HttpTransport } from "../../src/model/transport.ts";
+import { OpenAICompatibleModel, OpenAICompatibleResponseError } from "../../src/model/openai-compatible.ts";
 
 class FakeTransport implements HttpTransport {
   lastRequest?: HttpRequest;

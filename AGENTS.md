@@ -18,6 +18,7 @@
 - `src/tools/tool-registry.ts`：工具注册和执行策略
 - `src/tools/security.ts`：workspace 边界和审批策略
 - `src/tools/workspace-tools.ts`：`read_file`、`list_files`、`search_text`
+- `test/`：按 `agent`、`tools`、`model` 分类的测试目录，镜像生产代码领域
 - `docs/official-coding-agent-gap-analysis.md`：能力差距和路线图
 
 ## 开发流程

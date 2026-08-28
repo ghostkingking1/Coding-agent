@@ -44,6 +44,7 @@ npm start -- "检查测试失败并修复"
 - `src/tools/workspace-tools.ts` / `src/tools/patch-tools.ts` / `src/tools/command-tools.ts` / `src/tools/test-tools.ts`：受限工作区读取、patch、命令和测试工具。
 - `src/model/`：模型审批、HTTP transport、provider adapter 与运行时配置。
 - `src/cli.ts`：本地演示和经交互确认的真实模型入口。
+- `test/`：按 `agent`、`tools`、`model` 镜像 `src/` 的独立测试目录。
 
 ## 与成熟 Coding Agent 的差距
 
