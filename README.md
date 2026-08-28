@@ -15,7 +15,21 @@ CLI 使用内置 `EchoModel` 演示运行链路。接入真实模型时，实现
 
 `FetchHttpTransport` 为 provider adapter 提供统一的 HTTP 超时、取消、响应大小限制、错误分类和 JSON 解析；adapter 负责各供应商协议转换。实际网络调用仍应由后续 provider 的配置和审批边界控制。
 
-`OpenAICompatibleModel` 是第一个非流式 provider adapter，使用 Chat Completions 风格的文本和函数工具调用协议。它需要显式 `baseUrl`，可选接收 `apiKey` 或自定义 `HttpTransport`，不会自动读取环境变量或切换 CLI 的内置演示模型。
+`OpenAICompatibleModel` 是第一个非流式 provider adapter，使用 Chat Completions 风格的文本和函数工具调用协议。它需要显式 `baseUrl`，可选接收 `apiKey` 或自定义 `HttpTransport`。
+
+## 真实模型运行
+
+CLI 默认继续使用不联网的 `EchoModel`。只有完整设置下列环境变量时，才会创建受审批保护的 OpenAI-compatible 模型和工作区工具：
+
+```powershell
+$env:CODING_AGENT_MODEL_PROVIDER = "openai-compatible"
+$env:CODING_AGENT_MODEL_BASE_URL = "http://127.0.0.1:11434/v1"
+$env:CODING_AGENT_MODEL = "your-tool-capable-local-model"
+$env:CODING_AGENT_MODEL_API_KEY = ""
+npm start -- "检查测试失败并修复"
+```
+
+`CODING_AGENT_MODEL_API_KEY` 可省略，适用于不需要 token 的本地服务。可选 `CODING_AGENT_MODEL_TIMEOUT_MS` 和 `CODING_AGENT_MODEL_MAX_RESPONSE_BYTES` 必须是正整数。交互式 CLI 会在每次模型请求前显示目标 origin、消息角色、可用工具摘要并确认；模型请求、写入和命令执行均被拒绝，除非用户在 TTY 中输入确认。
 
 ## 模块边界
 

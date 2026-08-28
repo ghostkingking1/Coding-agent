@@ -70,6 +70,7 @@ test("serializes unified messages and tools into an OpenAI-compatible request", 
 
   assert.equal(transport.lastRequest?.url.toString(), "https://gateway.example/v1/chat/completions");
   assert.equal(transport.lastRequest?.init?.method, "POST");
+  assert.equal(transport.lastRequest?.init?.redirect, "error");
   assert.strictEqual(transport.lastRequest?.signal, controller.signal);
   const headers = new Headers(transport.lastRequest?.init?.headers);
   assert.equal(headers.get("content-type"), "application/json");

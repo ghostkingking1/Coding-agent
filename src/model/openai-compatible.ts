@@ -75,6 +75,8 @@ export class OpenAICompatibleModel implements ModelClient {
       url: this.endpoint,
       init: {
         method: "POST",
+        /** 审批只覆盖显式配置的 origin，不能让 fetch 把对话内容转发到未确认的重定向目标。 */
+        redirect: "error",
         headers,
         body: JSON.stringify(payload),
       },
