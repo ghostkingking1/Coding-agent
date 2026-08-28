@@ -1,19 +1,18 @@
 # Coding Agent 官方能力差距报告
 
-**基线**：阶段二基础闭环（2026-08-28）
+**基线**：P0 CLI 真实模型闭环验收完成（2026-08-29）
 **对象**：当前项目、Anthropic Claude Code、OpenAI Codex CLI
 **证据原则**：只采用厂商官方产品文档、开发者文档和官方开源仓库；不采用评测文章、媒体报道或第三方营销材料。
 
 ## 结论
 
-当前项目已具备受限本地 coding 闭环：`user -> model -> tool calls -> tool results -> model`。它包含工作区边界校验、读取/patch/命令/测试工具、输入 schema、审批、资源限制、OpenAI-compatible adapter 和模型网络审批。它仍不是产品级 coding agent：没有真实服务验收、流式交互、持久审计、上下文预算、恢复、平台 sandbox 或多供应商实现。
+当前项目已具备受限本地 coding 闭环：`user -> model -> tool calls -> tool results -> model`。它包含工作区边界校验、读取/patch/命令/测试工具、输入 schema、审批、资源限制、OpenAI-compatible adapter、模型网络审批和 CLI 运行摘要。已用真实 OpenAI-compatible 模型完成一次隔离仓库的读取、修改、测试失败、修复和测试通过验收。它仍不是产品级 coding agent：没有流式交互、持久审计、上下文预算、恢复、平台 sandbox 或多供应商实现。
 
 对齐顺序应是：
 
-1. 用真实本地或已授权免费模型验收已有读取、修改、测试、修复闭环。
-2. 流式事件、有限重试和持久化审计。
-3. 上下文预算、checkpoint、恢复与幂等。
-4. 平台 sandbox、扩展协议、多供应商和多会话。
+1. 流式事件、有限重试和持久化审计。
+2. 上下文预算、checkpoint、恢复与幂等。
+3. 平台 sandbox、扩展协议、多供应商和多会话。
 
 ## 官方来源
 
@@ -49,9 +48,11 @@
 | 命令与测试 | 受限 `run_command`、结构化 `run_tests`；超时、输出上限、环境白名单和子进程终止 | `src/tools/command-tools.ts`、`src/tools/test-tools.ts` |
 | 工具安全 | Zod 输入校验、模型 JSON Schema、capability、workspace realpath 与写入/执行审批 | `src/tools/` |
 | 模型接入 | 统一契约、受限 HTTP transport、OpenAI-compatible adapter、显式配置和逐次网络审批 | `src/model/` |
-| 缺失 | 真实服务验收、流式输出、持久化、上下文预算、恢复、平台 sandbox 和审计记录 | 全局 |
+| CLI | 注册读取、搜索、patch 和 `run_tests`，不暴露 `run_command`；输出模型和工具摘要 | `src/cli.ts` |
+| 真实验收 | `glm-5.3` 完成读取、两次 patch、失败测试和通过测试 | `docs/compatibility-notes.md` |
+| 缺失 | 流式输出、持久化、上下文预算、恢复、平台 sandbox 和审计记录 | 全局 |
 
-现有测试覆盖 Agent 循环、工具输入校验、workspace 越界、patch 审批、命令与测试超时/取消、transport 限制，以及模型审批和协议转换。没有连接真实模型服务的自动化验收测试。
+现有测试覆盖 Agent 循环、CLI 工具注册与运行摘要、工具输入校验、workspace 越界、patch 审批、命令与测试超时/取消、transport 限制，以及模型审批和协议转换。真实模型验收为手工测试，不作为自动化测试运行，避免要求测试环境提供 API key。
 
 ## 核心执行差距
 
@@ -61,7 +62,7 @@
 | 工具编排 | A2/A4/O5 | capability、Zod 校验、模型 JSON Schema、审批和超时 | 无并行调度、外部工具协议、持久审计 | P1 |
 | 完成判定 | A2/O1 | 可由 `run_tests` 返回结构化结果并继续回传模型 | 无任务级验证策略，模型仍可在未验证时结束 | P1 |
 | Coding 工具 | A1/A2/O1 | 可读取、搜索、patch、运行受限命令和测试 | 无复杂编辑、依赖安装策略、网络工具和平台 sandbox | P1 |
-| 反馈交互 | A1/O1 | CLI 逐次请求模型网络与副作用确认 | 无流式文本、计划视图、工具进度和终端 UI | P1 |
+| 反馈交互 | A1/O1 | CLI 逐次请求模型网络与副作用确认，并显示模型开始、工具请求、完成或失败摘要 | 无流式文本、计划视图和终端 UI | P1 |
 | 恢复 | A2/O1 | 只有内存消息 | 无 run id、checkpoint、断点恢复和幂等 | P1 |
 
 ## 安全差距
@@ -81,12 +82,12 @@
 
 ## 路线图
 
-### P0：真实闭环验收
+### P0：真实闭环验收（已完成）
 
-1. 配置一个支持工具调用的本地或已授权免费 OpenAI-compatible 模型。
-2. 在隔离测试仓库中手工验证“读取 -> patch -> run_tests -> 失败修复 -> 再测试”。
-3. 记录 provider 兼容性问题，只修复契约或 adapter 必需的差异，不为单一服务提前泛化。
-4. 为 CLI 模型审批、工具审批和最终结果增加可读的运行摘要。
+1. 已使用已授权 OpenAI-compatible `glm-5.3` 配置。
+2. 已在隔离 scratch 仓库手工验证“读取 -> patch -> run_tests -> 失败修复 -> 再测试”。
+3. 已记录 provider 兼容性结果；本次无需 adapter 修复。
+4. CLI 已输出模型和工具的可读运行摘要。
 
 ### P1：可观测性与可靠性
 
@@ -104,7 +105,7 @@
 
 ## 验收标准
 
-- 真实模型能在隔离测试仓库完成一次“读取 -> 修改 -> 测试 -> 失败修复 -> 再测试”。
+- 已验收：真实模型在隔离测试仓库完成一次“读取 -> 修改 -> 测试 -> 失败修复 -> 再测试”。
 - 每次模型网络请求、写入和命令执行在副作用前均有可读审批信息。
 - 工作区外任意路径读取、写入、删除均被拒绝；命令超时能终止整个子进程树。
 - 对模型响应、命令 stdout/stderr 和工具结果的资源上限均有测试。

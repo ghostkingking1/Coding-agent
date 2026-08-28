@@ -52,6 +52,7 @@ docs/
 ## 文档
 
 - [功能总结](docs/feature-summary.md)：当前已经实现的功能与模块职责。
+- [兼容性记录](docs/compatibility-notes.md)：真实模型验收中观察到的协议兼容性结果。
 - [官方能力差距报告](docs/official-coding-agent-gap-analysis.md)：与 Claude Code、Codex CLI 的详细差距、证据和后续路线。
 - [开发协作规范](AGENTS.md)：分支、测试、安全和提交要求。
 
@@ -66,3 +67,5 @@ docs/
 - 建立供应商无关的 `ModelClient` 契约，增加受限 HTTP transport 和 `OpenAICompatibleModel`，支持文本与函数工具调用协议转换。
 - 增加显式 `.env` 配置和 `ApprovedModelClient`，每次模型网络请求在发送对话或工具结果前都需要审批；未配置时保持不联网的 Echo 模式。
 - 将生产代码按 `agent`、`tools`、`model` 分类，将测试代码独立放入 `test/`。
+- CLI 只向模型开放读取、搜索、patch 和 `run_tests`，不开放通用 `run_command`；终端输出模型和工具调用摘要。
+- 使用真实 OpenAI-compatible `glm-5.3` 在隔离仓库完成读取、两次修改、失败测试、修复和通过测试的手工验收，未发现需要修复的 adapter 兼容性问题。

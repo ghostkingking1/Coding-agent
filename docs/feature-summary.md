@@ -41,6 +41,8 @@
 - `ApprovedModelClient` 确保每次可能上传对话或工具结果的模型请求先经过审批。
 - 通过 `.env` 显式配置 provider、base URL、模型和可选 API key。
 - 未配置模型时保持不联网的 Echo 演示模式。
+- CLI 只向模型注册读取、搜索、patch 和 `run_tests`；模型开始、工具请求、完成或失败会输出单行终端摘要。
+- 已用真实 OpenAI-compatible 模型在隔离仓库完成一次“读取 -> 修改 -> 测试失败 -> 修复 -> 测试通过”的验收，详见[兼容性记录](compatibility-notes.md)。
 
 ## 测试与组织
 
