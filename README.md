@@ -22,15 +22,16 @@ npm start -- "请检查这个项目"
 Copy-Item .env.example .env
 ```
 
-然后填写一个支持 Chat Completions 和工具调用的 OpenAI-compatible 服务：
+然后填写一个支持 Chat Completions 和工具调用的云端 OpenAI-compatible 服务。下面以 OpenAI 风格 endpoint 为例，实际使用其他服务时替换三项配置：
 
 ```dotenv
 CODING_AGENT_MODEL_PROVIDER=openai-compatible
-CODING_AGENT_MODEL_BASE_URL=http://127.0.0.1:11434/v1
-CODING_AGENT_MODEL=your-tool-capable-local-model
+CODING_AGENT_MODEL_BASE_URL=https://api.openai.com/v1
+CODING_AGENT_MODEL=your-tool-capable-cloud-model
+CODING_AGENT_MODEL_API_KEY=your-api-key
 ```
 
-`CODING_AGENT_MODEL_API_KEY` 可选；`CODING_AGENT_MODEL_TIMEOUT_MS` 和 `CODING_AGENT_MODEL_MAX_RESPONSE_BYTES` 也可选，但必须是正整数。真实模型请求、写入和命令执行都需要交互式确认；非 TTY 环境默认拒绝这些操作。
+`CODING_AGENT_MODEL_BASE_URL` 必须是服务的 API 根地址，`CODING_AGENT_MODEL` 必须是该服务实际提供的模型名，`CODING_AGENT_MODEL_API_KEY` 用于 Bearer 认证。API key 只写入本机 `.env`，不要提交到 Git。`CODING_AGENT_MODEL_TIMEOUT_MS` 和 `CODING_AGENT_MODEL_MAX_RESPONSE_BYTES` 可选，但必须是正整数。真实模型请求、写入和命令执行都需要交互式确认；非 TTY 环境默认拒绝这些操作。
 
 ## 目录结构
 
