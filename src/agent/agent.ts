@@ -1,4 +1,5 @@
 import { ToolRegistry } from "../tools/tool-registry.ts";
+import { RunChangeTracker } from "./run-diff.ts";
 import type {
   AgentOptions,
   AgentResult,
@@ -35,6 +36,7 @@ export class Agent {
     }
 
     const messages: Message[] = [];
+    const changeTracker = this.options.includeRunDiff === false ? undefined : new RunChangeTracker();
     if (this.options.systemPrompt) {
       messages.push({ role: "system", content: this.options.systemPrompt });
     }
@@ -65,6 +67,7 @@ export class Agent {
           messages: [...messages],
           steps: step,
           stopReason: "completed",
+          ...(changeTracker ? { diff: await changeTracker.finish() } : {}),
         } as const;
         await this.emit({ type: "run_finished", steps: result.steps, stopReason: result.stopReason });
         return result;
@@ -72,7 +75,7 @@ export class Agent {
 
       for (const call of calls) {
         await this.emit({ type: "tool_requested", step, toolName: call.name, toolCallId: call.id });
-        messages.push(await this.executeToolCall(call, messages, step));
+        messages.push(await this.executeToolCall(call, messages, step, changeTracker));
       }
     }
 
@@ -81,17 +84,19 @@ export class Agent {
       messages: [...messages],
       steps: this.options.maxSteps,
       stopReason: "max_steps",
+      ...(changeTracker ? { diff: await changeTracker.finish() } : {}),
     } as const;
     await this.emit({ type: "run_finished", steps: result.steps, stopReason: result.stopReason });
     return result;
   }
 
   /** 执行单个工具调用，并把成功或失败结果转换为工具消息。 */
-  private async executeToolCall(call: ToolCall, messages: readonly Message[], step: number): Promise<Message> {
+  private async executeToolCall(call: ToolCall, messages: readonly Message[], step: number, changeTracker?: RunChangeTracker): Promise<Message> {
     try {
       const result = await this.tools.execute(call.name, call.input, {
         messages,
         signal: this.options.signal,
+        changeTracker,
       });
       await this.emit({ type: "tool_completed", step, toolName: call.name, toolCallId: call.id });
       return {

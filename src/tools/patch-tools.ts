@@ -4,7 +4,7 @@ import { applyPatchModelInputSchema } from "./model-tool-schemas.ts";
 import type { WorkspacePolicy } from "./security.ts";
 import { pathInputSchema, stringWithoutNullByteSchema } from "./tool-input-schemas.ts";
 import { defineTool } from "./tool-schema.ts";
-import type { Tool } from "../agent/types.ts";
+import type { Tool, ToolContext } from "../agent/types.ts";
 
 /** 单个文件在 patch 中的变更摘要。 */
 export interface PatchFileResult {
@@ -32,6 +32,7 @@ interface PlannedPatch {
   readonly preview: string;
   readonly files: readonly PatchFileResult[];
   readonly writes: readonly { path: string; content: string }[];
+  readonly originals: readonly { path: string; relativePath: string; content: string }[];
 }
 
 const MAX_PATCH_CHANGES = 50;
@@ -65,6 +66,9 @@ export function createPatchTool(policy: WorkspacePolicy): Tool {
     },
     async execute(input, context) {
       const plan = await planPatch(policy, input, context);
+      for (const original of plan.originals) {
+        context.changeTracker?.recordBeforeWrite(original.path, original.relativePath, original.content);
+      }
       for (const write of plan.writes) {
         await fs.writeFile(write.path, write.content, "utf8");
       }
@@ -73,19 +77,24 @@ export function createPatchTool(policy: WorkspacePolicy): Tool {
   });
 }
 
-async function planPatch(policy: WorkspacePolicy, input: PatchInput, context: { readonly signal?: AbortSignal }): Promise<PlannedPatch> {
-  const loadedFiles = new Map<string, { content: string; relativePath: string; changes: number }>();
+async function planPatch(policy: WorkspacePolicy, input: PatchInput, context: ToolContext): Promise<PlannedPatch> {
+  const loadedFiles = new Map<string, { content: string; originalContent: string; relativePath: string; changes: number }>();
   const hunks: string[] = [];
 
   for (const change of input.changes) {
     throwIfAborted(context.signal);
     const resolved = policy.resolveFile(change.path);
     /** 同一文件的多处修改基于内存中的最新内容串行规划，避免后续匹配读到旧文件。 */
-    const existing = loadedFiles.get(resolved.path) ?? {
-      content: await fs.readFile(resolved.path, "utf8"),
-      relativePath: policy.relative(resolved.path),
-      changes: 0,
-    };
+    let existing = loadedFiles.get(resolved.path);
+    if (!existing) {
+      const originalContent = await fs.readFile(resolved.path, "utf8");
+      existing = {
+        content: originalContent,
+        originalContent,
+        relativePath: policy.relative(resolved.path),
+        changes: 0,
+      };
+    }
 
     const applied = applyExactReplacement(existing.content, change.find, change.replaceWith, existing.relativePath, policy.maxFileBytes);
     existing.content = applied.content;
@@ -97,7 +106,8 @@ async function planPatch(policy: WorkspacePolicy, input: PatchInput, context: { 
   const files = [...loadedFiles.entries()].map(([path, value]) => ({ path: value.relativePath, changes: value.changes }));
   const preview = clampPreview(hunks.join("\n\n"));
   const writes = [...loadedFiles.entries()].map(([path, value]) => ({ path, content: value.content }));
-  return { preview, files, writes };
+  const originals = [...loadedFiles.entries()].map(([path, value]) => ({ path, relativePath: value.relativePath, content: value.originalContent }));
+  return { preview, files, writes, originals };
 }
 
 function applyExactReplacement(content: string, find: string, replaceWith: string, relativePath: string, maxFileBytes: number): { content: string; startLine: number } {

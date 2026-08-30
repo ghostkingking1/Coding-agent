@@ -132,6 +132,10 @@ export interface ToolContext {
   readonly messages: readonly Message[];
   /** 用于取消当前工具工作的信号。 */
   readonly signal?: AbortSignal;
+  /** 当前 Agent 运行的变更记录器，供写入工具在副作用前保存原始内容。 */
+  readonly changeTracker?: {
+    recordBeforeWrite(absolutePath: string, relativePath: string, originalContent: string): void;
+  };
 }
 
 /** 工具执行前的授权策略。 */
@@ -172,6 +176,8 @@ export interface AgentOptions {
   signal?: AbortSignal;
   /** 每个运行事件发出时调用的观察器。 */
   onEvent?: (event: RunEvent) => void | Promise<void>;
+  /** 是否生成本次运行涉及文件的最终 diff。 */
+  includeRunDiff?: boolean;
 }
 
 export interface AgentResult {
@@ -183,4 +189,6 @@ export interface AgentResult {
   steps: number;
   /** 运行结束的原因。 */
   stopReason: "completed" | "max_steps";
+  /** 本次运行成功写入文件的最终 unified diff。 */
+  diff?: import("./run-diff.ts").RunDiff;
 }

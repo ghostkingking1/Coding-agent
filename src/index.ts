@@ -1,4 +1,5 @@
 export { Agent } from "./agent/agent.ts";
+export { RunChangeTracker } from "./agent/run-diff.ts";
 export { ToolRegistry } from "./tools/tool-registry.ts";
 export { ApprovalDeniedError, DefaultApprovalPolicy, SecurityPolicy, WorkspacePolicy, WorkspaceSecurityError } from "./tools/security.ts";
 export { defineTool, ToolInputValidationError, validateToolInput } from "./tools/tool-schema.ts";
@@ -40,6 +41,7 @@ export type {
   UserMessage,
   RunEvent,
 } from "./agent/types.ts";
+export type { RunDiff, RunDiffFile } from "./agent/run-diff.ts";
 export type { ToolDefinition } from "./tools/tool-schema.ts";
 export type { ModelTransportErrorCode, ModelTransportErrorOptions } from "./model/errors.ts";
 export type { FetchHttpTransportOptions, FetchLike, HttpRequest, HttpResponse, HttpTransport } from "./model/transport.ts";

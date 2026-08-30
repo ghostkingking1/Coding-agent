@@ -89,6 +89,7 @@ export async function main(): Promise<void> {
       onEvent: (event) => console.error(formatRunEvent(event)),
     }).run(input);
     console.log(result.finalText);
+    printRunDiff(result.diff?.text);
     return;
   }
 
@@ -108,6 +109,7 @@ export async function main(): Promise<void> {
       onEvent: (event) => console.error(formatRunEvent(event)),
     }).run(input);
     console.log(result.finalText);
+    printRunDiff(result.diff?.text);
   } finally {
     prompt.close();
   }
@@ -147,6 +149,10 @@ async function confirm(readline: ReturnType<typeof createInterface>, prompt: str
 
 function truncate(value: string, limit = 4000): string {
   return value.length > limit ? `${value.slice(0, limit)}...` : value;
+}
+
+function printRunDiff(diff: string | undefined): void {
+  if (diff) console.log(`\nChanges:\n${diff}`);
 }
 
 if (isMainModule()) {

@@ -7,6 +7,7 @@ import { ApprovalDeniedError, SecurityPolicy, WorkspacePolicy, WorkspaceSecurity
 import { ToolRegistry } from "../../src/tools/tool-registry.ts";
 import { createWorkspaceTools } from "../../src/tools/workspace-tools.ts";
 import type { PatchPreview, PatchResult } from "../../src/tools/patch-tools.ts";
+import { RunChangeTracker } from "../../src/agent/run-diff.ts";
 
 async function withWorkspace(run: (root: string) => Promise<void>): Promise<void> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "coding-agent-"));
@@ -118,5 +119,24 @@ test("approval policy sees the patch preview before denying", async () => {
       ],
     }, { messages: [] }), ApprovalDeniedError);
     assert.equal(await fs.readFile(path.join(root, "src", "app.ts"), "utf8"), "const answer = 41;\n");
+  });
+});
+
+test("apply_patch records originals only when execution is approved", async () => {
+  await withWorkspace(async (root) => {
+    const file = path.join(root, "app.ts");
+    await fs.writeFile(file, "const answer = 41;\n", "utf8");
+    const policy = new WorkspacePolicy({ root });
+    const patch = createWorkspaceTools(policy).find((tool) => tool.name === "apply_patch");
+    if (!patch) throw new Error("apply_patch was not registered");
+    const tracker = new RunChangeTracker();
+    const input = { changes: [{ path: "app.ts", find: "41", replaceWith: "42" }] };
+
+    await patch.preview?.(input, { messages: [], changeTracker: tracker });
+    assert.deepEqual((await tracker.finish()).files, []);
+    await patch.execute(input, { messages: [], changeTracker: tracker });
+    const result = await tracker.finish();
+    assert.match(result.text, /-const answer = 41;/);
+    assert.match(result.text, /\+const answer = 42;/);
   });
 });

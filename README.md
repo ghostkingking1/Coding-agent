@@ -69,3 +69,4 @@ docs/
 - 将生产代码按 `agent`、`tools`、`model` 分类，将测试代码独立放入 `test/`。
 - CLI 只向模型开放读取、搜索、patch 和 `run_tests`，不开放通用 `run_command`；终端输出模型和工具调用摘要。
 - 使用真实 OpenAI-compatible `glm-5.3` 在隔离仓库完成读取、两次修改、失败测试、修复和通过测试的手工验收，未发现需要修复的 adapter 兼容性问题。
+- `Agent.run()` 汇总本次运行中由 `apply_patch` 成功写入的文件，结束时返回带文件名和上下文的最终 unified diff。
