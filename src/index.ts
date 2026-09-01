@@ -1,5 +1,5 @@
 export { Agent } from "./agent/agent.ts";
-export { RunChangeTracker } from "./agent/run-diff.ts";
+export { RunChangeTracker, cleanupStaleBaselineDirectories } from "./agent/run-diff.ts";
 export { ToolRegistry } from "./tools/tool-registry.ts";
 export { ApprovalDeniedError, DefaultApprovalPolicy, SecurityPolicy, WorkspacePolicy, WorkspaceSecurityError } from "./tools/security.ts";
 export { defineTool, ToolInputValidationError, validateToolInput } from "./tools/tool-schema.ts";

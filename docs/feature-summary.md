@@ -45,6 +45,7 @@
 - 已用真实 OpenAI-compatible 模型在隔离仓库完成一次“读取 -> 修改 -> 测试失败 -> 修复 -> 测试通过”的验收，详见[兼容性记录](compatibility-notes.md)。
 - `Agent.run()` 会记录 patch 首次写入前的原始内容，并在运行结束时与最终文件内容比较，汇总本次运行的 unified diff；不依赖 Git，也不会把运行前已有修改混入结果。
 - run diff 现在以 Agent 运行前后的工作区快照为事实来源，可发现 `run_command` 和 `run_tests` 间接产生的新增、修改、删除文件；默认忽略隐藏目录、`.git` 和 `node_modules`，并限制文件数量、单文件大小和输出大小。
+- 快照阶段内存只保留文件元索引，文本基线下沉到独立临时目录；使用流式 SHA-256 检测变化，仅对新增、删除或哈希变化的文件加载内容计算 diff。`complete: false` 或 `untrackedPaths` 表示资源限制、读取失败或基线不足，不能当作完整结果。
 
 ## 测试与组织
 

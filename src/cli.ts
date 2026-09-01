@@ -18,8 +18,9 @@ import {
   type ModelRequest,
   type ModelResponse,
   type RunEvent,
+  type RunDiff,
 } from "./index.ts";
-import { RunChangeTracker } from "./agent/run-diff.ts";
+import { cleanupStaleBaselineDirectories, RunChangeTracker } from "./agent/run-diff.ts";
 
 /** CLI 只向模型开放可验证的测试入口，不把通用命令执行能力扩展到交互式 Agent。 */
 export const CLI_MODEL_TOOL_NAMES = ["read_file", "list_files", "apply_patch", "run_tests", "search_text"] as const;
@@ -76,6 +77,7 @@ class EchoModel implements ModelClient {
 }
 
 export async function main(): Promise<void> {
+  await cleanupStaleBaselineDirectories();
   const input = process.argv.slice(2).join(" ").trim();
   if (!input) {
     console.error("Usage: npm start -- <request>");
@@ -92,7 +94,7 @@ export async function main(): Promise<void> {
       changeTracker: new RunChangeTracker({ root: workspace.root }),
     }).run(input);
     console.log(result.finalText);
-    printRunDiff(result.diff?.text);
+    printRunDiff(result.diff);
     return;
   }
 
@@ -112,7 +114,7 @@ export async function main(): Promise<void> {
       changeTracker: new RunChangeTracker({ root: workspace.root }),
     }).run(input);
     console.log(result.finalText);
-    printRunDiff(result.diff?.text);
+    printRunDiff(result.diff);
   } finally {
     prompt.close();
   }
@@ -154,8 +156,11 @@ function truncate(value: string, limit = 4000): string {
   return value.length > limit ? `${value.slice(0, limit)}...` : value;
 }
 
-function printRunDiff(diff: string | undefined): void {
-  if (diff) console.log(`\nChanges:\n${diff}`);
+function printRunDiff(diff: RunDiff | undefined): void {
+  if (!diff) return;
+  if (diff.text) console.log(`\nChanges:\n${diff.text}`);
+  if (!diff.complete) console.error(`[agent] warning: change snapshot incomplete; omitted paths: ${diff.omittedPaths.join(", ") || "unknown"}`);
+  if (diff.untrackedPaths.length > 0) console.error(`[agent] warning: changes could not be diffed: ${diff.untrackedPaths.join(", ")}`);
 }
 
 if (isMainModule()) {

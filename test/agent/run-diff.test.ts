@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { Agent } from "../../src/agent/agent.ts";
-import { RunChangeTracker } from "../../src/agent/run-diff.ts";
+import { cleanupStaleBaselineDirectories, RunChangeTracker } from "../../src/agent/run-diff.ts";
 import type { ModelClient, ModelResponse } from "../../src/agent/types.ts";
 import { SecurityPolicy, WorkspacePolicy } from "../../src/tools/security.ts";
 import { ToolRegistry } from "../../src/tools/tool-registry.ts";
@@ -35,6 +35,33 @@ test("run diff compares the original file with its final content and keeps conte
     assert.match(result.text, /-three/);
     assert.match(result.text, /\+changed/);
     assert.match(result.text, / four/);
+  });
+});
+
+test("each tracker gets independent session and run IDs", () => {
+  const first = new RunChangeTracker();
+  const second = new RunChangeTracker();
+  assert.match(first.sessionId, /^sess_[A-Za-z0-9-]+$/);
+  assert.match(first.runId, /^run_[A-Za-z0-9-]+$/);
+  assert.notEqual(first.sessionId, second.sessionId);
+  assert.notEqual(first.runId, second.runId);
+});
+
+test("stale cleanup only removes old baseline directories", async () => {
+  await withWorkspace(async (root) => {
+    const stale = path.join(root, "coding-agent-baseline-stale");
+    const fresh = path.join(root, "coding-agent-baseline-fresh");
+    const other = path.join(root, "other-temp");
+    await fs.mkdir(stale);
+    await fs.mkdir(fresh);
+    await fs.mkdir(other);
+    const old = new Date(Date.now() - 60_000);
+    await fs.utimes(stale, old, old);
+
+    await cleanupStaleBaselineDirectories({ tempRoot: root, maxAgeMs: 1_000 });
+    await assert.rejects(() => fs.stat(stale));
+    await fs.stat(fresh);
+    await fs.stat(other);
   });
 });
 
@@ -69,7 +96,12 @@ test("run diff omits files restored to their original content", async () => {
     await fs.writeFile(file, content, "utf8");
 
     const result = await tracker.finish();
-    assert.deepEqual(result, { files: [], text: "", truncated: false, complete: true, omittedPaths: [] });
+    assert.equal(result.files.length, 0);
+    assert.equal(result.text, "");
+    assert.equal(result.truncated, false);
+    assert.equal(result.complete, true);
+    assert.deepEqual(result.omittedPaths, []);
+    assert.deepEqual(result.untrackedPaths, []);
   });
 });
 

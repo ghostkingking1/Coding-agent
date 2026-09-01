@@ -38,6 +38,14 @@ export class Agent {
     const messages: Message[] = [];
     const changeTracker = this.options.includeRunDiff === false ? undefined : this.options.changeTracker ?? new RunChangeTracker();
     await changeTracker?.start();
+    try {
+      return await this.executeRun(input, messages, changeTracker);
+    } finally {
+      await changeTracker?.dispose();
+    }
+  }
+
+  private async executeRun(input: string, messages: Message[], changeTracker?: RunChangeTracker): Promise<AgentResult> {
     if (this.options.systemPrompt) {
       messages.push({ role: "system", content: this.options.systemPrompt });
     }
