@@ -36,7 +36,8 @@ export class Agent {
     }
 
     const messages: Message[] = [];
-    const changeTracker = this.options.includeRunDiff === false ? undefined : new RunChangeTracker();
+    const changeTracker = this.options.includeRunDiff === false ? undefined : this.options.changeTracker ?? new RunChangeTracker();
+    await changeTracker?.start();
     if (this.options.systemPrompt) {
       messages.push({ role: "system", content: this.options.systemPrompt });
     }

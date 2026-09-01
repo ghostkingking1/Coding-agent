@@ -44,6 +44,7 @@
 - CLI 只向模型注册读取、搜索、patch 和 `run_tests`；模型开始、工具请求、完成或失败会输出单行终端摘要。
 - 已用真实 OpenAI-compatible 模型在隔离仓库完成一次“读取 -> 修改 -> 测试失败 -> 修复 -> 测试通过”的验收，详见[兼容性记录](compatibility-notes.md)。
 - `Agent.run()` 会记录 patch 首次写入前的原始内容，并在运行结束时与最终文件内容比较，汇总本次运行的 unified diff；不依赖 Git，也不会把运行前已有修改混入结果。
+- run diff 现在以 Agent 运行前后的工作区快照为事实来源，可发现 `run_command` 和 `run_tests` 间接产生的新增、修改、删除文件；默认忽略隐藏目录、`.git` 和 `node_modules`，并限制文件数量、单文件大小和输出大小。
 
 ## 测试与组织
 

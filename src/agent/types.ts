@@ -178,6 +178,8 @@ export interface AgentOptions {
   onEvent?: (event: RunEvent) => void | Promise<void>;
   /** 是否生成本次运行涉及文件的最终 diff。 */
   includeRunDiff?: boolean;
+  /** 可注入工作区范围的 tracker，便于 CLI 或测试控制快照范围。 */
+  changeTracker?: import("./run-diff.ts").RunChangeTracker;
 }
 
 export interface AgentResult {

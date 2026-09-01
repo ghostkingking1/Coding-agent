@@ -50,7 +50,7 @@
 | 模型接入 | 统一契约、受限 HTTP transport、OpenAI-compatible adapter、显式配置和逐次网络审批 | `src/model/` |
 | CLI | 注册读取、搜索、patch 和 `run_tests`，不暴露 `run_command`；输出模型和工具摘要 | `src/cli.ts` |
 | 真实验收 | `glm-5.3` 完成读取、两次 patch、失败测试和通过测试 | `docs/compatibility-notes.md` |
-| 运行 diff | 记录 patch 首次写入前内容，在运行结束时汇总最终 unified diff | `src/agent/run-diff.ts`、`src/agent/agent.ts` |
+| 运行 diff | 对工作区建立前后快照，在运行结束时汇总 patch、命令和测试脚本产生的新增、修改、删除和二进制文件变化 | `src/agent/run-diff.ts`、`src/agent/agent.ts` |
 | 缺失 | 流式输出、持久化、上下文预算、恢复、平台 sandbox 和审计记录 | 全局 |
 
 现有测试覆盖 Agent 循环、CLI 工具注册与运行摘要、工具输入校验、workspace 越界、patch 审批、命令与测试超时/取消、transport 限制，以及模型审批和协议转换。真实模型验收为手工测试，不作为自动化测试运行，避免要求测试环境提供 API key。

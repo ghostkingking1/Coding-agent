@@ -19,6 +19,7 @@ import {
   type ModelResponse,
   type RunEvent,
 } from "./index.ts";
+import { RunChangeTracker } from "./agent/run-diff.ts";
 
 /** CLI 只向模型开放可验证的测试入口，不把通用命令执行能力扩展到交互式 Agent。 */
 export const CLI_MODEL_TOOL_NAMES = ["read_file", "list_files", "apply_patch", "run_tests", "search_text"] as const;
@@ -83,10 +84,12 @@ export async function main(): Promise<void> {
   }
 
   const config = readModelRuntimeConfig(process.env);
+  const workspace = new WorkspacePolicy({ root: process.cwd() });
   if (!config) {
     const result = await new Agent(new EchoModel(), new ToolRegistry(), {
       systemPrompt: createCodingSystemPrompt(process.cwd()),
       onEvent: (event) => console.error(formatRunEvent(event)),
+      changeTracker: new RunChangeTracker({ root: workspace.root }),
     }).run(input);
     console.log(result.finalText);
     printRunDiff(result.diff?.text);
@@ -98,7 +101,6 @@ export async function main(): Promise<void> {
     const model = createConfiguredModelClient(config, {
       approval: new DefaultModelApprovalPolicy((request) => prompt.confirmModel(request)),
     });
-    const workspace = new WorkspacePolicy({ root: process.cwd() });
     const registry = new ToolRegistry(new SecurityPolicy({
       approval: new DefaultApprovalPolicy((request) => prompt.confirmTool(request)),
     }));
@@ -107,6 +109,7 @@ export async function main(): Promise<void> {
     const result = await new Agent(model, registry, {
       systemPrompt: createCodingSystemPrompt(workspace.root),
       onEvent: (event) => console.error(formatRunEvent(event)),
+      changeTracker: new RunChangeTracker({ root: workspace.root }),
     }).run(input);
     console.log(result.finalText);
     printRunDiff(result.diff?.text);

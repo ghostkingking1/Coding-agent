@@ -76,7 +76,7 @@ docs(agent): document branch and validation workflow
 2. Zod 本地输入校验、面向模型的 JSON Schema、工具 capability 和副作用审批。
 3. provider 无关模型契约、受限 HTTP transport、OpenAI-compatible adapter，以及显式配置和逐次模型网络审批。
 4. CLI 注册 `run_tests` 而不暴露 `run_command`，输出模型和工具运行摘要，并通过真实 OpenAI-compatible 模型完成读取、修改、失败测试、修复和通过测试的手工验收。
-5. Agent run 记录 `apply_patch` 的原始文件内容，并在运行结束时汇总带文件名和上下文的最终 unified diff。
+5. Agent run 对工作区建立前后快照，在运行结束时汇总带文件名和上下文的最终 unified diff，可捕获 patch、命令和测试脚本产生的新增、修改和删除文件。
 
 ### 后续顺序
 
