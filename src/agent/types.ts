@@ -182,6 +182,16 @@ export interface AgentOptions {
   changeTracker?: import("./run-diff.ts").RunChangeTracker;
 }
 
+/** 单次 Agent run 可由 Session 注入的上下文和标识。 */
+export interface AgentRunOptions {
+  /** 延续此前 run 的消息上下文。 */
+  initialMessages?: readonly Message[];
+  /** 关联本次运行的 Session 标识。 */
+  sessionId?: string;
+  /** 本次运行的稳定标识。 */
+  runId?: string;
+}
+
 export interface AgentResult {
   /** Agent 最终生成的文本。 */
   finalText: string;

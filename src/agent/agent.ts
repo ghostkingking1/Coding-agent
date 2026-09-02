@@ -2,6 +2,7 @@ import { ToolRegistry } from "../tools/tool-registry.ts";
 import { RunChangeTracker } from "./run-diff.ts";
 import type {
   AgentOptions,
+  AgentRunOptions,
   AgentResult,
   Message,
   ModelClient,
@@ -30,13 +31,16 @@ export class Agent {
   }
 
   /** 执行一次用户请求，并在模型和工具之间循环传递消息。 */
-  async run(input: string): Promise<AgentResult> {
+  async run(input: string, runOptions: AgentRunOptions = {}): Promise<AgentResult> {
     if (!input.trim()) {
       throw new Error("Agent input must not be empty");
     }
 
-    const messages: Message[] = [];
-    const changeTracker = this.options.includeRunDiff === false ? undefined : this.options.changeTracker ?? new RunChangeTracker();
+    const messages: Message[] = [...(runOptions.initialMessages ?? [])];
+    const changeTracker = this.options.includeRunDiff === false ? undefined : this.options.changeTracker ?? new RunChangeTracker({
+      sessionId: runOptions.sessionId,
+      runId: runOptions.runId,
+    });
     await changeTracker?.start();
     try {
       return await this.executeRun(input, messages, changeTracker);
@@ -46,7 +50,7 @@ export class Agent {
   }
 
   private async executeRun(input: string, messages: Message[], changeTracker?: RunChangeTracker): Promise<AgentResult> {
-    if (this.options.systemPrompt) {
+    if (this.options.systemPrompt && !messages.some((message) => message.role === "system")) {
       messages.push({ role: "system", content: this.options.systemPrompt });
     }
     messages.push({ role: "user", content: input });
