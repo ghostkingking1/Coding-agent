@@ -37,7 +37,7 @@ export class Agent {
     }
 
     const messages: Message[] = [...(runOptions.initialMessages ?? [])];
-    const changeTracker = this.options.includeRunDiff === false ? undefined : this.options.changeTracker ?? new RunChangeTracker({
+    const changeTracker = this.options.includeRunDiff === false ? undefined : runOptions.changeTracker ?? this.options.changeTracker ?? new RunChangeTracker({
       sessionId: runOptions.sessionId,
       runId: runOptions.runId,
     });

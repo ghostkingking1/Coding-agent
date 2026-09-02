@@ -190,6 +190,8 @@ export interface AgentRunOptions {
   sessionId?: string;
   /** 本次运行的稳定标识。 */
   runId?: string;
+  /** 可选的本次运行变更跟踪器；由 Session/CLI 注入以隔离每轮基线。 */
+  changeTracker?: import("./run-diff.ts").RunChangeTracker;
 }
 
 export interface AgentResult {

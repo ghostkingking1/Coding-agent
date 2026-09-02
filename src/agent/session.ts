@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { Agent } from "./agent.ts";
-import type { AgentResult, Message } from "./types.ts";
+import type { AgentResult, AgentRunOptions, Message } from "./types.ts";
 
 export type SessionStatus = "active" | "closed";
 export type RunStatus = "completed" | "failed";
@@ -64,7 +64,7 @@ export class Session {
   }
 
   /** 顺序执行一次 run；成功的完整消息上下文才会提交到 Session。 */
-  async run(input: string): Promise<RunResult> {
+  async run(input: string, options: Pick<AgentRunOptions, "changeTracker"> = {}): Promise<RunResult> {
     if (this.statusValue === "closed") throw new Error("Session is closed");
     if (this.running) throw new Error("Session already has a run in progress");
     const runId = `run_${crypto.randomUUID()}`;
@@ -76,6 +76,7 @@ export class Session {
         initialMessages: this.context,
         sessionId: this.sessionId,
         runId,
+        changeTracker: options.changeTracker,
       });
       const finishedAt = new Date().toISOString();
       const runResult: RunResult = { ...result, status: "completed", sessionId: this.sessionId, runId, startedAt, finishedAt };
