@@ -35,6 +35,8 @@ export interface RunChangeTrackerOptions {
   readonly maxFiles?: number;
   readonly maxSnapshotBytes?: number;
   readonly ignoredDirectories?: readonly string[];
+  /** 保留 baseline 目录并允许多次 checkpoint（通常由 Session 使用）。 */
+  readonly reuseBaseline?: boolean;
 }
 
 /** 清理进程崩溃后遗留的项目专属 baseline 临时目录，不触碰其他临时目录。 */
@@ -75,6 +77,7 @@ interface SnapshotOptions {
   readonly maxFiles: number;
   readonly maxSnapshotBytes: number;
   readonly ignoredDirectories: ReadonlySet<string>;
+  readonly previous?: WorkspaceSnapshot;
 }
 interface FallbackFile { readonly absolutePath: string; readonly relativePath: string; readonly originalContent: string; }
 
@@ -89,6 +92,7 @@ export class RunChangeTracker {
   private readonly maxFiles: number;
   private readonly maxSnapshotBytes: number;
   private readonly ignoredDirectories: ReadonlySet<string>;
+  private readonly reuseBaseline: boolean;
   private readonly fallbackFiles = new Map<string, FallbackFile>();
   private baseline?: WorkspaceSnapshot;
   private baselineDirectory?: string;
@@ -106,6 +110,7 @@ export class RunChangeTracker {
     this.maxFiles = options.maxFiles ?? DEFAULT_MAX_FILES;
     this.maxSnapshotBytes = options.maxSnapshotBytes ?? DEFAULT_MAX_SNAPSHOT_BYTES;
     this.ignoredDirectories = new Set(options.ignoredDirectories ?? DEFAULT_IGNORED_DIRECTORIES);
+    this.reuseBaseline = options.reuseBaseline ?? false;
     assertInteger(this.contextLines, "contextLines", 0);
     assertInteger(this.maxDiffChars, "maxDiffChars", 1);
     assertInteger(this.maxFileBytes, "maxFileBytes", 1);
@@ -130,7 +135,7 @@ export class RunChangeTracker {
   /** 比较运行前后的索引，只读取变化且具备基线的文件来生成 diff。 */
   async finish(): Promise<RunDiff> {
     const result = !this.root || !this.baseline ? await this.finishFallback() : await this.finishSnapshot();
-    await this.dispose();
+    if (!this.reuseBaseline) await this.dispose();
     return result;
   }
 
@@ -144,7 +149,7 @@ export class RunChangeTracker {
   }
 
   private async finishSnapshot(): Promise<RunDiff> {
-    const after = await snapshotWorkspace(this.root!, this.snapshotOptions());
+    const after = await snapshotWorkspace(this.root!, { ...this.snapshotOptions(), previous: this.baseline });
     const before = this.baseline!;
     const paths = [...new Set([...before.files.keys(), ...after.files.keys()])].sort();
     const files: RunDiffFile[] = [];
@@ -155,6 +160,7 @@ export class RunChangeTracker {
       if (sameMetadata(oldFile, newFile)) continue;
       files.push({ path: relativePath, diff: await renderDiff(relativePath, oldFile, newFile, this.baselineDirectory, this.root!, this.contextLines) });
     }
+    if (this.reuseBaseline) await this.promoteBaseline(after, before);
     return buildResult(this.sessionId, this.runId, files, this.maxDiffChars, before.complete && after.complete, unique([...before.omittedPaths, ...after.omittedPaths]), unique([...before.untrackedPaths, ...after.untrackedPaths]));
   }
 
@@ -169,6 +175,25 @@ export class RunChangeTracker {
 
   private snapshotOptions(): SnapshotOptions {
     return { maxFileBytes: this.maxFileBytes, maxFiles: this.maxFiles, maxSnapshotBytes: this.maxSnapshotBytes, ignoredDirectories: this.ignoredDirectories };
+  }
+
+  /** checkpoint 后仅复制新增或已变化的文本文件，未变化文件继续复用旧 baseline。 */
+  private async promoteBaseline(after: WorkspaceSnapshot, before: WorkspaceSnapshot): Promise<void> {
+    if (!this.baselineDirectory) return;
+    const promoted = new Map<string, SnapshotFile>();
+    for (const relative of after.files.keys()) {
+      const current = after.files.get(relative)!;
+      const previous = before.files.get(relative);
+      if (current.fileType === "untracked") { promoted.set(relative, current); continue; }
+      if (previous && sameMetadata(previous, current)) { promoted.set(relative, previous); continue; }
+      if (current.fileType === "text") {
+        const target = path.join(this.baselineDirectory, relative);
+        await fs.mkdir(path.dirname(target), { recursive: true });
+        await fs.copyFile(path.join(this.root!, relative), target);
+        promoted.set(relative, { ...current, baselinePath: target });
+      } else promoted.set(relative, current);
+    }
+    this.baseline = { ...after, files: promoted };
   }
 }
 
@@ -201,6 +226,13 @@ async function snapshotWorkspace(root: string, options: SnapshotOptions, baselin
           complete = false;
           untrackedPaths.push(relative);
           files.set(relative, { fileType: "untracked", size: beforeStat.size, mtimeMs: beforeStat.mtimeMs });
+          continue;
+        }
+        const previous = options.previous?.files.get(relative);
+        // 先比较 stat/size；绝大多数未变化文件无需再次读取和计算哈希。
+        if (previous && previous.fileType !== "untracked" && previous.size === beforeStat.size && previous.mtimeMs === beforeStat.mtimeMs) {
+          files.set(relative, previous);
+          snapshotBytes += beforeStat.size;
           continue;
         }
         const hash = await hashFile(absolutePath);

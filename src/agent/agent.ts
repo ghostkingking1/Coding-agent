@@ -37,15 +37,21 @@ export class Agent {
     }
 
     const messages: Message[] = [...(runOptions.initialMessages ?? [])];
-    const changeTracker = this.options.includeRunDiff === false ? undefined : runOptions.changeTracker ?? this.options.changeTracker ?? new RunChangeTracker({
+    const suppliedChangeTracker = runOptions.changeTracker ?? this.options.changeTracker;
+    const ownsChangeTracker = !suppliedChangeTracker && this.options.includeRunDiff !== false;
+    const changeTracker = this.options.includeRunDiff === false ? undefined : suppliedChangeTracker ?? new RunChangeTracker({
       sessionId: runOptions.sessionId,
       runId: runOptions.runId,
     });
     await changeTracker?.start();
+    let completed = false;
     try {
-      return await this.executeRun(input, messages, changeTracker);
+      const result = await this.executeRun(input, messages, changeTracker);
+      completed = true;
+      return result;
     } finally {
-      await changeTracker?.dispose();
+      // 外部传入的可复用 Session tracker 由调用方在 Session 生命周期结束时清理。
+      if (ownsChangeTracker || !completed) await changeTracker?.dispose();
     }
   }
 

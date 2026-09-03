@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { Agent } from "./agent.ts";
 import type { AgentResult, AgentRunOptions, Message } from "./types.ts";
+import { RunChangeTracker } from "./run-diff.ts";
 
 export type SessionStatus = "active" | "closed";
 export type RunStatus = "completed" | "failed";
@@ -34,6 +35,8 @@ export interface SessionResult {
 
 export interface SessionOptions {
   readonly sessionId?: string;
+  /** 可选的工作区 tracker；Session 会在多个 run 间复用其 baseline。 */
+  readonly changeTracker?: RunChangeTracker;
 }
 
 /** 管理多个 Agent run 共享的消息上下文和生命周期。 */
@@ -44,11 +47,13 @@ export class Session {
   private readonly runHistory: SessionRun[] = [];
   private statusValue: SessionStatus = "active";
   private running = false;
+  private readonly changeTracker?: RunChangeTracker;
 
   constructor(agent: Agent, options: SessionOptions = {}) {
     this.agent = agent;
     this.sessionId = options.sessionId ?? `sess_${crypto.randomUUID()}`;
     validateId(this.sessionId, "sessionId");
+    this.changeTracker = options.changeTracker;
   }
 
   get status(): SessionStatus {
@@ -72,11 +77,12 @@ export class Session {
     const startedAt = new Date().toISOString();
     this.running = true;
     try {
+      if (this.changeTracker) await this.changeTracker.start();
       const result = await this.agent.run(input, {
         initialMessages: this.context,
         sessionId: this.sessionId,
         runId,
-        changeTracker: options.changeTracker,
+        changeTracker: options.changeTracker ?? this.changeTracker,
       });
       const finishedAt = new Date().toISOString();
       const runResult: RunResult = { ...result, status: "completed", sessionId: this.sessionId, runId, startedAt, finishedAt };
@@ -103,6 +109,7 @@ export class Session {
   close(): SessionResult {
     if (this.running) throw new Error("Cannot close Session while a run is in progress");
     this.statusValue = "closed";
+    void this.changeTracker?.dispose();
     const last = this.runHistory.at(-1);
     return {
       sessionId: this.sessionId,
