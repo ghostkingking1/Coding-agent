@@ -12,6 +12,8 @@ npm test
 npm start -- "请检查这个项目"
 ```
 
+不带参数时，`npm start` 会在 TTY 中进入持续对话 REPL；每行执行一次 Agent，输入 `exit` 或 `quit` 退出并查看 Session diff。非 TTY 环境必须显式提供请求参数。
+
 未配置真实模型时，CLI 使用不联网的 `EchoModel` 演示执行循环。
 
 ## 真实模型

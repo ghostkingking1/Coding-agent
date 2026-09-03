@@ -2,6 +2,7 @@ import { ToolRegistry } from "../tools/tool-registry.ts";
 import { RunChangeTracker } from "./run-diff.ts";
 import type {
   AgentOptions,
+  AgentRunOptions,
   AgentResult,
   Message,
   ModelClient,
@@ -30,23 +31,32 @@ export class Agent {
   }
 
   /** 执行一次用户请求，并在模型和工具之间循环传递消息。 */
-  async run(input: string): Promise<AgentResult> {
+  async run(input: string, runOptions: AgentRunOptions = {}): Promise<AgentResult> {
     if (!input.trim()) {
       throw new Error("Agent input must not be empty");
     }
 
-    const messages: Message[] = [];
-    const changeTracker = this.options.includeRunDiff === false ? undefined : this.options.changeTracker ?? new RunChangeTracker();
+    const messages: Message[] = [...(runOptions.initialMessages ?? [])];
+    const suppliedChangeTracker = runOptions.changeTracker ?? this.options.changeTracker;
+    const ownsChangeTracker = !suppliedChangeTracker && this.options.includeRunDiff !== false;
+    const changeTracker = this.options.includeRunDiff === false ? undefined : suppliedChangeTracker ?? new RunChangeTracker({
+      sessionId: runOptions.sessionId,
+      runId: runOptions.runId,
+    });
     await changeTracker?.start();
+    let completed = false;
     try {
-      return await this.executeRun(input, messages, changeTracker);
+      const result = await this.executeRun(input, messages, changeTracker);
+      completed = true;
+      return result;
     } finally {
-      await changeTracker?.dispose();
+      // 外部传入的可复用 Session tracker 由调用方在 Session 生命周期结束时清理。
+      if (ownsChangeTracker || !completed) await changeTracker?.dispose();
     }
   }
 
   private async executeRun(input: string, messages: Message[], changeTracker?: RunChangeTracker): Promise<AgentResult> {
-    if (this.options.systemPrompt) {
+    if (this.options.systemPrompt && !messages.some((message) => message.role === "system")) {
       messages.push({ role: "system", content: this.options.systemPrompt });
     }
     messages.push({ role: "user", content: input });

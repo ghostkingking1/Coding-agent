@@ -140,6 +140,37 @@ test("run diff reports added, deleted, and binary files", async () => {
   });
 });
 
+test("reuses a session baseline and checkpoints only incremental changes", async () => {
+  await withWorkspace(async (root) => {
+    const stable = path.join(root, "stable.txt");
+    const changing = path.join(root, "changing.txt");
+    await fs.writeFile(stable, "stable\n", "utf8");
+    await fs.writeFile(changing, "one\n", "utf8");
+    const tracker = new RunChangeTracker({ root, reuseBaseline: true });
+    await tracker.start();
+
+    await fs.writeFile(changing, "two\n", "utf8");
+    const first = await tracker.finish();
+    assert.deepEqual(first.files.map((file) => file.path), ["changing.txt"]);
+
+    await fs.writeFile(changing, "three\n", "utf8");
+    const second = await tracker.finish();
+    assert.deepEqual(second.files.map((file) => file.path), ["changing.txt"]);
+    assert.match(second.text, /-two/);
+    assert.match(second.text, /\+three/);
+    await tracker.dispose();
+  });
+});
+
+test("reusable baseline is cleaned when disposed after an exception", async () => {
+  await withWorkspace(async (root) => {
+    const tracker = new RunChangeTracker({ root, reuseBaseline: true });
+    await tracker.start();
+    await assert.doesNotReject(() => tracker.dispose());
+    await assert.doesNotReject(() => tracker.dispose());
+  });
+});
+
 test("Agent result contains the final diff after a patch tool call", async () => {
   await withWorkspace(async (root) => {
     const file = path.join(root, "app.ts");

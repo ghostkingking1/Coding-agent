@@ -1,4 +1,5 @@
 export { Agent } from "./agent/agent.ts";
+export { Session } from "./agent/session.ts";
 export { RunChangeTracker, cleanupStaleBaselineDirectories } from "./agent/run-diff.ts";
 export { ToolRegistry } from "./tools/tool-registry.ts";
 export { ApprovalDeniedError, DefaultApprovalPolicy, SecurityPolicy, WorkspacePolicy, WorkspaceSecurityError } from "./tools/security.ts";
@@ -16,6 +17,7 @@ export { argsInputSchema, envInputSchema, pathInputSchema, singleLineTextSchema,
 export type {
   ApprovalRequest,
   AgentOptions,
+  AgentRunOptions,
   AgentResult,
   AssistantMessage,
   JsonObject,
@@ -42,6 +44,7 @@ export type {
   RunEvent,
 } from "./agent/types.ts";
 export type { RunDiff, RunDiffFile } from "./agent/run-diff.ts";
+export type { FailedRun, RunResult, RunStatus, SessionResult, SessionRun, SessionStatus, SessionOptions } from "./agent/session.ts";
 export type { ToolDefinition } from "./tools/tool-schema.ts";
 export type { ModelTransportErrorCode, ModelTransportErrorOptions } from "./model/errors.ts";
 export type { FetchHttpTransportOptions, FetchLike, HttpRequest, HttpResponse, HttpTransport } from "./model/transport.ts";
