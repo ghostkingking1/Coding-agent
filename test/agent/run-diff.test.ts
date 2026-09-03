@@ -140,22 +140,52 @@ test("run diff reports added, deleted, and binary files", async () => {
   });
 });
 
-test("reuses a session baseline and checkpoints only incremental changes", async () => {
+test("reuses a session index while each checkpoint keeps its own run ID", async () => {
   await withWorkspace(async (root) => {
     const stable = path.join(root, "stable.txt");
     const changing = path.join(root, "changing.txt");
     await fs.writeFile(stable, "stable\n", "utf8");
     await fs.writeFile(changing, "one\n", "utf8");
     const tracker = new RunChangeTracker({ root, reuseBaseline: true });
-    await tracker.start();
+    await tracker.start("run_first");
 
     await fs.writeFile(changing, "two\n", "utf8");
     const first = await tracker.finish();
+    assert.equal(first.runId, "run_first");
     assert.deepEqual(first.files.map((file) => file.path), ["changing.txt"]);
 
+    await tracker.start("run_second");
     await fs.writeFile(changing, "three\n", "utf8");
     const second = await tracker.finish();
+    assert.equal(second.runId, "run_second");
     assert.deepEqual(second.files.map((file) => file.path), ["changing.txt"]);
+    assert.match(second.text, /-two/);
+    assert.match(second.text, /\+three/);
+    await tracker.dispose();
+  });
+});
+
+test("reused session index tracks changed, added, and deleted files across run directories", async () => {
+  await withWorkspace(async (root) => {
+    const changed = path.join(root, "changed.txt");
+    const deleted = path.join(root, "deleted.txt");
+    await fs.writeFile(changed, "one\n", "utf8");
+    await fs.writeFile(deleted, "remove\n", "utf8");
+    const tracker = new RunChangeTracker({ root, reuseBaseline: true });
+    await tracker.start("run_first");
+    await fs.writeFile(changed, "two\n", "utf8");
+    await fs.writeFile(path.join(root, "added.txt"), "added\n", "utf8");
+    await fs.rm(deleted);
+    const first = await tracker.finish();
+    assert.deepEqual(first.files.map((file) => file.path), ["added.txt", "changed.txt", "deleted.txt"]);
+
+    await tracker.start("run_second");
+    await fs.writeFile(changed, "three\n", "utf8");
+    await fs.rm(path.join(root, "added.txt"));
+    const second = await tracker.finish();
+    assert.equal(second.runId, "run_second");
+    assert.deepEqual(second.files.map((file) => file.path), ["added.txt", "changed.txt"]);
+    assert.match(second.text, /-added/);
     assert.match(second.text, /-two/);
     assert.match(second.text, /\+three/);
     await tracker.dispose();

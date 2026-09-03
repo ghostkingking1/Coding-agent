@@ -77,12 +77,14 @@ export class Session {
     const startedAt = new Date().toISOString();
     this.running = true;
     try {
-      if (this.changeTracker) await this.changeTracker.start();
+      const changeTracker = options.changeTracker ?? this.changeTracker;
+      // 由 Session 分配的 runId 决定本轮 baseline 目录，保证磁盘审计身份和运行记录一致。
+      await changeTracker?.start(runId);
       const result = await this.agent.run(input, {
         initialMessages: this.context,
         sessionId: this.sessionId,
         runId,
-        changeTracker: options.changeTracker ?? this.changeTracker,
+        changeTracker,
       });
       const finishedAt = new Date().toISOString();
       const runResult: RunResult = { ...result, status: "completed", sessionId: this.sessionId, runId, startedAt, finishedAt };
