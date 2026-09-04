@@ -35,8 +35,13 @@ export class SqliteSessionStore implements SessionStore {
   }
 
   async startRun(run: StoredRunRecord): Promise<void> {
-    this.database.prepare("INSERT INTO runs (id, session_id, status, input, started_at) VALUES (?, ?, 'running', ?, ?)")
-      .run(run.id, run.sessionId, run.input, run.startedAt);
+    // SQLite 事务同时承担跨进程互斥，避免两个终端在内存锁之外并发占用同一 Session。
+    this.transaction(() => {
+      const active = this.database.prepare("SELECT id FROM runs WHERE session_id = ? AND status = 'running' LIMIT 1").get(run.sessionId);
+      if (active) throw new Error("Session already has an active run");
+      this.database.prepare("INSERT INTO runs (id, session_id, status, input, started_at) VALUES (?, ?, 'running', ?, ?)")
+        .run(run.id, run.sessionId, run.input, run.startedAt);
+    });
   }
 
   async completeRun(input: CompleteRunInput): Promise<void> {

@@ -24,10 +24,20 @@ export class SessionManager {
   async load(sessionId: string): Promise<Session> {
     const record = await this.requireSession(sessionId);
     if (path.resolve(record.workspaceRoot) !== path.resolve(this.workspaceRoot)) throw new Error("Session workspace does not match the current workspace");
-    await this.store.interruptRunningRuns(sessionId, new Date().toISOString());
-    const messages = await this.store.listMessages(sessionId);
     const runs = await this.store.listRuns(sessionId);
+    if (runs.some((run) => run.status === "running")) {
+      throw new Error("Session has an active run; refuse to load it concurrently");
+    }
+    const messages = await this.store.listMessages(sessionId);
     return Session.restore(this.agent, { record, store: this.store, messages, runs });
+  }
+
+  /** 显式接管疑似崩溃的会话；调用方必须先确认原进程已停止。 */
+  async recover(sessionId: string): Promise<Session> {
+    const record = await this.requireSession(sessionId);
+    if (path.resolve(record.workspaceRoot) !== path.resolve(this.workspaceRoot)) throw new Error("Session workspace does not match the current workspace");
+    await this.store.interruptRunningRuns(sessionId, new Date().toISOString());
+    return this.load(sessionId);
   }
 
   list(): Promise<readonly SessionRecord[]> { return this.store.listSessions(); }
