@@ -57,6 +57,7 @@ test("recovery marks an unfinished run interrupted without committing messages",
     assert.equal(restored.messages.length, 0);
     assert.equal(restored.runs[0]?.status, "failed");
     assert.equal((restored.runs[0] as { error: string }).error, "Process ended before run completion");
+    await restored.close();
     await store.close();
   });
 });

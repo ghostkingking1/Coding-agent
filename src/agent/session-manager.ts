@@ -25,9 +25,11 @@ export class SessionManager {
     const record = await this.requireSession(sessionId);
     if (path.resolve(record.workspaceRoot) !== path.resolve(this.workspaceRoot)) throw new Error("Session workspace does not match the current workspace");
     const runs = await this.store.listRuns(sessionId);
-    if (runs.some((run) => run.status === "running")) {
+    const now = new Date().toISOString();
+    if (runs.some((run) => run.status === "running" && (!run.leaseUntil || run.leaseUntil > now))) {
       throw new Error("Session has an active run; refuse to load it concurrently");
     }
+    await this.store.interruptExpiredRuns(sessionId, now, now);
     const messages = await this.store.listMessages(sessionId);
     return Session.restore(this.agent, { record, store: this.store, messages, runs });
   }
@@ -36,7 +38,8 @@ export class SessionManager {
   async recover(sessionId: string): Promise<Session> {
     const record = await this.requireSession(sessionId);
     if (path.resolve(record.workspaceRoot) !== path.resolve(this.workspaceRoot)) throw new Error("Session workspace does not match the current workspace");
-    await this.store.interruptRunningRuns(sessionId, new Date().toISOString());
+    const now = new Date().toISOString();
+    await this.store.interruptExpiredRuns(sessionId, now, now);
     return this.load(sessionId);
   }
 

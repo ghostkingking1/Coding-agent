@@ -22,6 +22,8 @@ export interface StoredRunRecord {
   readonly startedAt: string;
   readonly finishedAt?: string;
   readonly result?: AgentResult;
+  readonly ownerId?: string;
+  readonly leaseUntil?: string;
 }
 
 export interface StoredMessage {
@@ -43,11 +45,13 @@ export interface SessionStore {
   getSession(sessionId: string): Promise<SessionRecord | undefined>;
   listSessions(): Promise<readonly SessionRecord[]>;
   closeSession(sessionId: string, updatedAt: string): Promise<void>;
-  startRun(run: StoredRunRecord): Promise<void>;
+  startRun(run: StoredRunRecord & { readonly ownerId?: string; readonly leaseUntil?: string }): Promise<void>;
+  heartbeatRun(sessionId: string, runId: string, ownerId: string, leaseUntil: string): Promise<void>;
   completeRun(input: CompleteRunInput): Promise<void>;
   failRun(input: { readonly sessionId: string; readonly runId: string; readonly status: "failed" | "interrupted"; readonly error: string; readonly finishedAt: string }): Promise<void>;
   listMessages(sessionId: string): Promise<readonly StoredMessage[]>;
   listRuns(sessionId: string): Promise<readonly StoredRunRecord[]>;
   interruptRunningRuns(sessionId: string, finishedAt: string): Promise<void>;
+  interruptExpiredRuns(sessionId: string, now: string, finishedAt: string): Promise<number>;
   close(): Promise<void>;
 }

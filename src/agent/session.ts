@@ -54,6 +54,7 @@ export class Session {
   private readonly store?: SessionStore;
   private readonly workspaceRoot?: string;
   private persisted = false;
+  private readonly ownerId = `pid-${process.pid}-${crypto.randomUUID()}`;
 
   constructor(agent: Agent, options: SessionOptions = {}) {
     this.agent = agent;
@@ -102,9 +103,12 @@ export class Session {
     validateId(runId, "runId");
     const startedAt = new Date().toISOString();
     this.running = true;
+    let heartbeat: NodeJS.Timeout | undefined;
     try {
       await this.initialize();
-      await this.store?.startRun({ id: runId, sessionId: this.sessionId, status: "running", input, startedAt });
+      const leaseUntil = new Date(Date.now() + 30_000).toISOString();
+      await this.store?.startRun({ id: runId, sessionId: this.sessionId, status: "running", input, startedAt, ownerId: this.ownerId, leaseUntil });
+      heartbeat = this.store ? setInterval(() => { void this.store?.heartbeatRun(this.sessionId, runId, this.ownerId, new Date(Date.now() + 30_000).toISOString()); }, 5_000) : undefined;
       const changeTracker = options.changeTracker ?? this.changeTracker;
       // 由 Session 分配的 runId 决定本轮 baseline 目录，保证磁盘审计身份和运行记录一致。
       await changeTracker?.start(runId);
@@ -115,6 +119,7 @@ export class Session {
         changeTracker,
       });
       const finishedAt = new Date().toISOString();
+      if (heartbeat) clearInterval(heartbeat);
       const runResult: RunResult = { ...result, status: "completed", sessionId: this.sessionId, runId, startedAt, finishedAt };
       const newMessages = result.messages.slice(this.context.length);
       await this.store?.completeRun({
@@ -125,6 +130,7 @@ export class Session {
       this.runHistory.push(runResult);
       return runResult;
     } catch (error) {
+      if (heartbeat) clearInterval(heartbeat);
       const finishedAt = new Date().toISOString();
       await this.store?.failRun({ sessionId: this.sessionId, runId, status: "failed", error: error instanceof Error ? error.message : String(error), finishedAt });
       this.runHistory.push({
