@@ -157,7 +157,7 @@
       }
     } finally {
       readline.close();
-      options.session.close();
+      await options.session.close();
       await runTracker.dispose();
       const diff = await sessionTracker.finish();
       if (diff.text) output.write(`\nSession changes:\n${diff.text}\n`);

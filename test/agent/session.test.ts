@@ -72,10 +72,10 @@ test("enforces session lifecycle and rejects overlapping runs", async () => {
   const pending = session.run("long");
   await new Promise<void>((resolve) => setImmediate(resolve));
   await assert.rejects(() => session.run("overlap"), /already has a run/);
-  assert.throws(() => session.close(), /run is in progress/);
+  await assert.rejects(() => session.close(), /run is in progress/);
   release?.();
   await pending;
-  const closed = session.close();
+  const closed = await session.close();
   assert.equal(closed.status, "closed");
   await assert.rejects(() => session.run("after close"), /Session is closed/);
   assert.throws(() => new Session(new Agent(model), { sessionId: "bad id" }), /sessionId/);
