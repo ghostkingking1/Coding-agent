@@ -31,7 +31,8 @@ export class SessionManager {
     }
     await this.store.interruptExpiredRuns(sessionId, now, now);
     const messages = await this.store.listMessages(sessionId);
-    return Session.restore(this.agent, { record, store: this.store, messages, runs });
+    const contextCheckpoint = await this.store.getContextCheckpoint(sessionId);
+    return Session.restore(this.agent, { record, store: this.store, messages, runs, contextCheckpoint });
   }
 
   /** 显式接管疑似崩溃的会话；调用方必须先确认原进程已停止。 */

@@ -74,12 +74,13 @@ export class Session {
   }
 
   /** 从已提交记录恢复；未完成 run 已由 SessionManager 标记为 interrupted。 */
-  static restore(agent: Agent, input: { readonly record: SessionRecord; readonly store: SessionStore; readonly messages: readonly StoredMessage[]; readonly runs: readonly StoredRunRecord[] }): Session {
+  static restore(agent: Agent, input: { readonly record: SessionRecord; readonly store: SessionStore; readonly messages: readonly StoredMessage[]; readonly runs: readonly StoredRunRecord[]; readonly contextCheckpoint?: import("./types.ts").ContextCheckpoint }): Session {
     const session = new Session(agent, { sessionId: input.record.id, store: input.store, workspaceRoot: input.record.workspaceRoot });
     session.context = input.messages.map((message) => message.message);
     session.statusValue = input.record.status;
     session.persisted = true;
     session.runHistory.push(...input.runs.flatMap((run) => toSessionRun(run)));
+    if (input.contextCheckpoint) agent.restoreContextCheckpoint(input.contextCheckpoint, session.context);
     return session;
   }
 
@@ -117,6 +118,7 @@ export class Session {
         sessionId: this.sessionId,
         runId,
         changeTracker,
+        checkpoint: this.store ? { save: (checkpoint) => this.store!.saveCheckpoint(checkpoint) } : undefined,
       });
       const finishedAt = new Date().toISOString();
       if (heartbeat) clearInterval(heartbeat);
@@ -127,6 +129,8 @@ export class Session {
         messages: newMessages.map((message, index) => ({ sessionId: this.sessionId, runId, sequence: this.context.length + index, message, createdAt: finishedAt })),
       });
       this.context = [...result.messages];
+      const contextCheckpoint = await this.agent.exportContextCheckpoint(this.sessionId, this.context);
+      if (contextCheckpoint) await this.store?.saveContextCheckpoint(contextCheckpoint);
       this.runHistory.push(runResult);
       return runResult;
     } catch (error) {

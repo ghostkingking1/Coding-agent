@@ -44,6 +44,8 @@ export interface RunCommandResult extends RunCommandPreview {
   readonly timedOut: boolean;
   readonly aborted: boolean;
   readonly durationMs: number;
+  readonly stdoutArtifact?: { readonly artifactId: string; readonly complete: boolean };
+  readonly stderrArtifact?: { readonly artifactId: string; readonly complete: boolean };
   readonly error?: string;
 }
 
@@ -186,6 +188,8 @@ async function runPlannedCommand(plan: PlannedCommand, context: ToolContext): Pr
   const startedAt = Date.now();
   const stdout = createLimitedBuffer(plan.preview.maxStdoutBytes);
   const stderr = createLimitedBuffer(plan.preview.maxStderrBytes);
+  const stdoutWriter = context.toolOutputStore ? await context.toolOutputStore.createWriter(context.sessionId, context.runId, "stdout") : undefined;
+  const stderrWriter = context.toolOutputStore ? await context.toolOutputStore.createWriter(context.sessionId, context.runId, "stderr") : undefined;
   let timedOut = false;
   let aborted = false;
   let settled = false;
@@ -203,12 +207,16 @@ async function runPlannedCommand(plan: PlannedCommand, context: ToolContext): Pr
       windowsHide: true,
     });
 
-    const finish = (result: Pick<RunCommandResult, "exitCode" | "signal" | "error">) => {
+    let stdoutWrites = Promise.resolve();
+    let stderrWrites = Promise.resolve();
+    const finish = async (result: Pick<RunCommandResult, "exitCode" | "signal" | "error">) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
       if (forceKillTimer) clearTimeout(forceKillTimer);
       context.signal?.removeEventListener("abort", abort);
+      await Promise.all([stdoutWrites, stderrWrites]);
+      const [out, err] = await Promise.all([stdoutWriter?.close(), stderrWriter?.close()]);
       resolve({
         ...plan.preview,
         ...result,
@@ -219,6 +227,8 @@ async function runPlannedCommand(plan: PlannedCommand, context: ToolContext): Pr
         timedOut,
         aborted,
         durationMs: Date.now() - startedAt,
+        ...(out ? { stdoutArtifact: { artifactId: out.artifactId, complete: out.complete } } : {}),
+        ...(err ? { stderrArtifact: { artifactId: err.artifactId, complete: err.complete } } : {}),
       });
     };
 
@@ -240,10 +250,10 @@ async function runPlannedCommand(plan: PlannedCommand, context: ToolContext): Pr
     };
 
     context.signal?.addEventListener("abort", abort, { once: true });
-    child.stdout?.on("data", (chunk: Buffer) => stdout.append(chunk));
-    child.stderr?.on("data", (chunk: Buffer) => stderr.append(chunk));
-    child.on("error", (error) => finish({ exitCode: null, signal: null, error: error.message }));
-    child.on("close", (exitCode, signal) => finish({ exitCode, signal, error: undefined }));
+    child.stdout?.on("data", (chunk: Buffer) => { stdout.append(chunk); stdoutWrites = stdoutWrites.then(() => stdoutWriter?.append(chunk)); });
+    child.stderr?.on("data", (chunk: Buffer) => { stderr.append(chunk); stderrWrites = stderrWrites.then(() => stderrWriter?.append(chunk)); });
+    child.on("error", (error) => { void finish({ exitCode: null, signal: null, error: error.message }); });
+    child.on("close", (exitCode, signal) => { void finish({ exitCode, signal, error: undefined }); });
   });
 }
 

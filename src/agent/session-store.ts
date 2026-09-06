@@ -1,4 +1,4 @@
-import type { AgentResult, Message } from "./types.ts";
+import type { AgentResult, CheckpointRecord, ContextCheckpoint, Message } from "./types.ts";
 
 export type PersistedSessionStatus = "active" | "closed";
 export type PersistedRunStatus = "running" | "completed" | "failed" | "interrupted";
@@ -53,5 +53,9 @@ export interface SessionStore {
   listRuns(sessionId: string): Promise<readonly StoredRunRecord[]>;
   interruptRunningRuns(sessionId: string, finishedAt: string): Promise<void>;
   interruptExpiredRuns(sessionId: string, now: string, finishedAt: string): Promise<number>;
+  saveCheckpoint(checkpoint: CheckpointRecord): Promise<void>;
+  getCheckpoint(sessionId: string, runId: string): Promise<CheckpointRecord | undefined>;
+  saveContextCheckpoint(checkpoint: ContextCheckpoint): Promise<void>;
+  getContextCheckpoint(sessionId: string): Promise<ContextCheckpoint | undefined>;
   close(): Promise<void>;
 }

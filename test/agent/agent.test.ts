@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { Agent } from "../../src/agent/agent.ts";
+import { DefaultContextManager } from "../../src/agent/context-manager.ts";
 import { ToolRegistry } from "../../src/tools/tool-registry.ts";
 import type { Message, ModelClient, ModelRequest, ModelResponse, Tool } from "../../src/agent/types.ts";
 
@@ -159,4 +160,56 @@ test("passes declared model tools and the cancellation signal to the model", asy
     description: "Visible tool",
     inputSchema: { type: "object", additionalProperties: false },
   }]);
+});
+
+test("feeds provider input usage back into context estimation", async () => {
+  const contextManager = new DefaultContextManager();
+  const model: ModelClient = {
+    provider: "fake",
+    model: "fake-model",
+    capabilities: fakeCapabilities,
+    async generate(request): Promise<ModelResponse> {
+      const raw = request.contextResult!.rawEstimatedTokens;
+      return {
+        message: { role: "assistant", content: "done" },
+        usage: { inputTokens: raw * 2, outputTokens: 1, totalTokens: raw * 2 + 1 },
+      };
+    },
+  };
+  const before = contextManager.estimate([{ role: "user", content: "hello" }]);
+  await new Agent(model, undefined, { contextManager }).run("hello");
+  assert.ok(contextManager.estimate([{ role: "user", content: "hello" }]) > before);
+});
+
+test("exposes a paged artifact reader after a tool returns oversized output", async () => {
+  let calls = 0;
+  const model: ModelClient = {
+    provider: "fake", model: "fake-model", capabilities: fakeCapabilities,
+    async generate(request): Promise<ModelResponse> {
+      calls += 1;
+      if (calls === 1) return { message: { role: "assistant", content: "", toolCalls: [{ id: "large", name: "large", input: {} }] } };
+      assert.ok(request.messages.some((message) => message.role === "tool" && message.content.includes("artifactId=out_")));
+      assert.ok(request.tools.some((tool) => tool.name === "read_tool_output"));
+      return { message: { role: "assistant", content: "done" } };
+    },
+  };
+  const registry = new ToolRegistry().register({ name: "large", description: "large", execute: () => "x".repeat(5_000) });
+  const result = await new Agent(model, registry, { includeRunDiff: false }).run("inspect", { sessionId: "artifact-session", runId: "artifact-run" });
+  assert.equal(result.finalText, "done");
+});
+
+test("reuses checkpointed tool results instead of executing the tool twice", async () => {
+  let executions = 0;
+  const checkpoints: import("../../src/agent/types.ts").CheckpointRecord[] = [];
+  const tool = { name: "read", description: "read", manifest: { capabilities: ["read"] as const, modelInputSchema: { type: "object" } }, async execute() { executions += 1; return "cached result"; } };
+  const model: ModelClient = { provider: "fake", model: "fake", capabilities: fakeCapabilities, async generate(request) {
+    if (request.messages.some((message) => message.role === "tool")) return { message: { role: "assistant", content: "done" } };
+    return { message: { role: "assistant", content: "", toolCalls: [{ id: "call-1", name: "read", input: {} }] } };
+  } };
+  const first = await new Agent(model, new ToolRegistry().register(tool), { includeRunDiff: false }).run("inspect", { sessionId: "s", runId: "r", checkpoint: { save: async (checkpoint) => { checkpoints.push(checkpoint); } } });
+  assert.equal(first.finalText, "done");
+  const second = await new Agent(model, new ToolRegistry().register(tool), { includeRunDiff: false }).run("inspect", { sessionId: "s", runId: "r", replayToolResults: new Map([["r:1:call-1", "cached result"]]) });
+  assert.equal(second.finalText, "done");
+  assert.equal(executions, 1);
+  assert.ok(checkpoints.some((checkpoint) => checkpoint.phase === "tool"));
 });

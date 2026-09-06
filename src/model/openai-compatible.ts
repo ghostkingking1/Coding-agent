@@ -5,6 +5,7 @@ import type {
   ModelFinishReason,
   ModelRequest,
   ModelResponse,
+  ModelUsage,
   ModelToolDefinition,
   ToolCall,
 } from "../agent/types.ts";
@@ -182,7 +183,25 @@ function parseOpenAIResponse(value: unknown): ModelResponse {
   return {
     message: assistantMessage,
     finishReason: parseFinishReason(choice.finish_reason),
+    ...(response.usage ? { usage: parseUsage(response.usage) } : {}),
   };
+}
+
+function parseUsage(value: unknown): ModelUsage {
+  const usage = record(value, "response.usage");
+  const inputTokens = nonNegativeInteger(usage.prompt_tokens, "response.usage.prompt_tokens");
+  const outputTokens = nonNegativeInteger(usage.completion_tokens, "response.usage.completion_tokens");
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens: nonNegativeInteger(usage.total_tokens, "response.usage.total_tokens"),
+    ...(usage.prompt_tokens_details && typeof usage.prompt_tokens_details === "object" ? { cacheReadTokens: nonNegativeInteger((usage.prompt_tokens_details as Record<string, unknown>).cached_tokens ?? 0, "response.usage.prompt_tokens_details.cached_tokens") } : {}),
+  };
+}
+
+function nonNegativeInteger(value: unknown, path: string): number {
+  if (!Number.isInteger(value) || (value as number) < 0) throw invalidResponse(`${path} must be a non-negative integer`);
+  return value as number;
 }
 
 function parseToolCalls(value: unknown): readonly ToolCall[] {
