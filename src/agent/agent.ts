@@ -43,7 +43,7 @@ export class Agent {
       throw new Error("Agent input must not be empty");
     }
 
-    const messages: Message[] = [...(runOptions.initialMessages ?? [])];
+    const messages: Message[] = runOptions.resumeCheckpoint ? [...runOptions.resumeCheckpoint.messages] : [...(runOptions.initialMessages ?? [])];
     const suppliedChangeTracker = runOptions.changeTracker ?? this.options.changeTracker;
     const ownsChangeTracker = !suppliedChangeTracker && this.options.includeRunDiff !== false;
     const changeTracker = this.options.includeRunDiff === false ? undefined : suppliedChangeTracker ?? new RunChangeTracker({
@@ -63,12 +63,30 @@ export class Agent {
   }
 
   private async executeRun(input: string, messages: Message[], changeTracker?: RunChangeTracker, runOptions: AgentRunOptions = {}): Promise<AgentResult> {
-    if (this.options.systemPrompt && !messages.some((message) => message.role === "system")) {
+    const resumed = runOptions.resumeCheckpoint !== undefined;
+    if (!resumed && this.options.systemPrompt && !messages.some((message) => message.role === "system")) {
       messages.push({ role: "system", content: this.options.systemPrompt });
     }
-    messages.push({ role: "user", content: input });
+    if (!resumed) messages.push({ role: "user", content: input });
 
-    for (let step = 1; step <= this.options.maxSteps; step += 1) {
+    const replayToolResults = new Map(runOptions.replayToolResults);
+    for (const result of runOptions.resumeCheckpoint?.toolResults ?? []) replayToolResults.set(result.key, result.result);
+    let step = resumed ? runOptions.resumeCheckpoint!.step : 1;
+    if (resumed && runOptions.resumeCheckpoint!.phase === "model") {
+      const assistant = [...messages].reverse().find((message): message is Extract<Message, { role: "assistant" }> => message.role === "assistant");
+      if (!assistant?.toolCalls?.length) throw new Error("Checkpoint model phase has no resumable tool calls");
+      await this.executePendingCalls(assistant.toolCalls, messages, step, changeTracker, runOptions, replayToolResults);
+      step += 1;
+    } else if (resumed && runOptions.resumeCheckpoint!.phase === "tool") {
+      const assistantIndex = messages.map((message) => message.role).lastIndexOf("assistant");
+      const assistant = messages[assistantIndex] as Extract<Message, { role: "assistant" }> | undefined;
+      const resolved = new Set(messages.slice(assistantIndex + 1).filter((message): message is Extract<Message, { role: "tool" }> => message.role === "tool").map((message) => message.toolCallId));
+      const pending = assistant?.toolCalls?.filter((call) => !resolved.has(call.id)) ?? [];
+      if (pending.length) await this.executePendingCalls(pending, messages, step, changeTracker, runOptions, replayToolResults);
+      step += 1;
+    }
+
+    for (; step <= this.options.maxSteps; step += 1) {
       /** 每轮开始前检查取消信号，避免停止后的运行启动新的模型或工具操作。 */
       this.options.signal?.throwIfAborted();
       await this.emit({ type: "model_started", step });
@@ -104,16 +122,7 @@ export class Agent {
         return result;
       }
 
-      for (const call of calls) {
-        await this.emit({ type: "tool_requested", step, toolName: call.name, toolCallId: call.id });
-        const key = `${runOptions.runId ?? "run"}:${step}:${call.id}`;
-        const cached = runOptions.replayToolResults?.get(key);
-        const toolMessage = cached === undefined
-          ? await this.executeToolCall(call, messages, step, changeTracker, runOptions)
-          : { role: "tool", content: cached, toolCallId: call.id, toolName: call.name } as const;
-        messages.push(toolMessage);
-        await checkpoint(runOptions, step, "tool", messages, messages.filter((message): message is Extract<Message, { role: "tool" }> => message.role === "tool").map((message) => ({ key: `${runOptions.runId ?? "run"}:${step}:${message.toolCallId}`, toolCallId: message.toolCallId, toolName: message.toolName, status: "completed" as const, result: message.content })));
-      }
+      await this.executePendingCalls(calls, messages, step, changeTracker, runOptions, replayToolResults);
     }
 
     const result = {
@@ -125,6 +134,19 @@ export class Agent {
     } as const;
     await this.emit({ type: "run_finished", steps: result.steps, stopReason: result.stopReason });
     return result;
+  }
+
+  private async executePendingCalls(calls: readonly ToolCall[], messages: Message[], step: number, changeTracker: RunChangeTracker | undefined, runOptions: AgentRunOptions, replayToolResults: ReadonlyMap<string, string>): Promise<void> {
+    for (const call of calls) {
+      await this.emit({ type: "tool_requested", step, toolName: call.name, toolCallId: call.id });
+      const key = `${runOptions.runId ?? "run"}:${step}:${call.id}`;
+      const cached = replayToolResults.get(key);
+      const toolMessage = cached === undefined
+        ? await this.executeToolCall(call, messages, step, changeTracker, runOptions)
+        : { role: "tool", content: cached, toolCallId: call.id, toolName: call.name } as const;
+      messages.push(toolMessage);
+      await checkpoint(runOptions, step, "tool", messages, [{ key, toolCallId: call.id, toolName: call.name, status: "completed", result: toolMessage.content }]);
+    }
   }
 
   /** 执行单个工具调用，并把成功或失败结果转换为工具消息。 */

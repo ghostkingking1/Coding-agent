@@ -260,6 +260,8 @@ export interface AgentRunOptions {
   changeTracker?: import("./run-diff.ts").RunChangeTracker;
   checkpoint?: CheckpointSink;
   replayToolResults?: ReadonlyMap<string, string>;
+  /** 从已持久化的 run 内 checkpoint 继续，不能与新输入拼接。 */
+  resumeCheckpoint?: CheckpointRecord;
 }
 
 export interface CheckpointRecord {

@@ -44,6 +44,11 @@ export class SqliteSessionStore implements SessionStore {
     });
   }
 
+  async resumeRun(sessionId: string, runId: string, ownerId: string, leaseUntil: string): Promise<void> {
+    const result = this.database.prepare("UPDATE runs SET status = 'running', error = NULL, finished_at = NULL, owner_id = ?, lease_until = ? WHERE id = ? AND session_id = ? AND status = 'interrupted'").run(ownerId, leaseUntil, runId, sessionId);
+    if (result.changes !== 1) throw new Error("Run is not available for recovery");
+  }
+
   async heartbeatRun(sessionId: string, runId: string, ownerId: string, leaseUntil: string): Promise<void> {
     this.database.prepare("UPDATE runs SET lease_until = ? WHERE id = ? AND session_id = ? AND owner_id = ? AND status = 'running'").run(leaseUntil, runId, sessionId, ownerId);
   }

@@ -125,6 +125,30 @@ test("SQLite persists the independent context checkpoint", async () => {
   });
 });
 
+test("recovery resumes from a tool checkpoint without replaying the completed tool", async () => {
+  await withDatabase(async (root, databasePath) => {
+    const store = new SqliteSessionStore(databasePath);
+    const sessionId = "session-resume";
+    const runId = "run-resume";
+    await store.createSession({ id: sessionId, workspaceRoot: root, createdAt: "2026-01-01T00:00:00.000Z" });
+    await store.startRun({ id: runId, sessionId, status: "running", input: "inspect", startedAt: "2026-01-01T00:00:01.000Z", leaseUntil: new Date(Date.now() - 1_000).toISOString() });
+    await store.saveCheckpoint({ sessionId, runId, step: 1, phase: "tool", messages: [
+      { role: "user", content: "inspect" },
+      { role: "assistant", content: "", toolCalls: [{ id: "call-read", name: "read_file", input: { path: "a.ts" } }] },
+      { role: "tool", content: "saved output", toolCallId: "call-read", toolName: "read_file" },
+    ], toolResults: [{ key: `${runId}:1:call-read`, toolCallId: "call-read", toolName: "read_file", status: "completed", result: "saved output" }], updatedAt: "2026-01-01T00:00:02.000Z" });
+    const requests: string[][] = [];
+    const resumedModel = model(requests);
+    const manager = new SessionManager(new Agent(resumedModel, undefined, { includeRunDiff: false }), store, root);
+    const recovered = await manager.recover(sessionId);
+    const result = await recovered.resume();
+    assert.equal(result.finalText, "answer:inspect");
+    assert.deepEqual(requests[0], ["user:inspect", "assistant:", "tool:saved output"]);
+    assert.equal((await store.listRuns(sessionId))[0]?.status, "completed");
+    await store.close();
+  });
+});
+
 test("SQLite SessionStore rejects duplicate sessions and workspace-mismatched recovery", async () => {
   await withDatabase(async (root, databasePath) => {
     const store = new SqliteSessionStore(databasePath);

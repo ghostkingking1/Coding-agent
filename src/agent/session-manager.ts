@@ -41,7 +41,13 @@ export class SessionManager {
     if (path.resolve(record.workspaceRoot) !== path.resolve(this.workspaceRoot)) throw new Error("Session workspace does not match the current workspace");
     const now = new Date().toISOString();
     await this.store.interruptExpiredRuns(sessionId, now, now);
-    return this.load(sessionId);
+    const runs = await this.store.listRuns(sessionId);
+    const run = [...runs].reverse().find((candidate) => candidate.status === "interrupted");
+    const checkpoint = run ? await this.store.getCheckpoint(sessionId, run.id) : undefined;
+    if (!run || !checkpoint) return this.load(sessionId);
+    const messages = await this.store.listMessages(sessionId);
+    const contextCheckpoint = await this.store.getContextCheckpoint(sessionId);
+    return Session.restore(this.agent, { record, store: this.store, messages, runs, contextCheckpoint, resumable: { run, checkpoint } });
   }
 
   list(): Promise<readonly SessionRecord[]> { return this.store.listSessions(); }

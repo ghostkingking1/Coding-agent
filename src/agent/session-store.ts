@@ -46,6 +46,7 @@ export interface SessionStore {
   listSessions(): Promise<readonly SessionRecord[]>;
   closeSession(sessionId: string, updatedAt: string): Promise<void>;
   startRun(run: StoredRunRecord & { readonly ownerId?: string; readonly leaseUntil?: string }): Promise<void>;
+  resumeRun(sessionId: string, runId: string, ownerId: string, leaseUntil: string): Promise<void>;
   heartbeatRun(sessionId: string, runId: string, ownerId: string, leaseUntil: string): Promise<void>;
   completeRun(input: CompleteRunInput): Promise<void>;
   failRun(input: { readonly sessionId: string; readonly runId: string; readonly status: "failed" | "interrupted"; readonly error: string; readonly finishedAt: string }): Promise<void>;

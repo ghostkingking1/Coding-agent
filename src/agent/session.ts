@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { Agent } from "./agent.ts";
-import type { AgentResult, AgentRunOptions, Message } from "./types.ts";
+import type { AgentResult, AgentRunOptions, CheckpointRecord, Message } from "./types.ts";
 import { RunChangeTracker } from "./run-diff.ts";
 import type { SessionRecord, SessionStore, StoredMessage, StoredRunRecord } from "./session-store.ts";
 
@@ -55,6 +55,7 @@ export class Session {
   private readonly workspaceRoot?: string;
   private persisted = false;
   private readonly ownerId = `pid-${process.pid}-${crypto.randomUUID()}`;
+  private resumable?: { readonly run: StoredRunRecord; readonly checkpoint: CheckpointRecord };
 
   constructor(agent: Agent, options: SessionOptions = {}) {
     this.agent = agent;
@@ -74,13 +75,14 @@ export class Session {
   }
 
   /** 从已提交记录恢复；未完成 run 已由 SessionManager 标记为 interrupted。 */
-  static restore(agent: Agent, input: { readonly record: SessionRecord; readonly store: SessionStore; readonly messages: readonly StoredMessage[]; readonly runs: readonly StoredRunRecord[]; readonly contextCheckpoint?: import("./types.ts").ContextCheckpoint }): Session {
+  static restore(agent: Agent, input: { readonly record: SessionRecord; readonly store: SessionStore; readonly messages: readonly StoredMessage[]; readonly runs: readonly StoredRunRecord[]; readonly contextCheckpoint?: import("./types.ts").ContextCheckpoint; readonly resumable?: { readonly run: StoredRunRecord; readonly checkpoint: CheckpointRecord } }): Session {
     const session = new Session(agent, { sessionId: input.record.id, store: input.store, workspaceRoot: input.record.workspaceRoot });
     session.context = input.messages.map((message) => message.message);
     session.statusValue = input.record.status;
     session.persisted = true;
     session.runHistory.push(...input.runs.flatMap((run) => toSessionRun(run)));
     if (input.contextCheckpoint) agent.restoreContextCheckpoint(input.contextCheckpoint, session.context);
+    session.resumable = input.resumable;
     return session;
   }
 
@@ -94,6 +96,40 @@ export class Session {
 
   get runs(): readonly SessionRun[] {
     return [...this.runHistory];
+  }
+
+  /** 显式续跑已中断 run；尚未完成的工具仍会经过原审批策略。 */
+  async resume(): Promise<RunResult> {
+    const pending = this.resumable;
+    if (!pending) throw new Error("Session has no resumable checkpoint");
+    if (this.running) throw new Error("Session already has a run in progress");
+    this.running = true;
+    let heartbeat: NodeJS.Timeout | undefined;
+    try {
+      const leaseUntil = new Date(Date.now() + 30_000).toISOString();
+      await this.store!.resumeRun(this.sessionId, pending.run.id, this.ownerId, leaseUntil);
+      heartbeat = setInterval(() => { void this.store?.heartbeatRun(this.sessionId, pending.run.id, this.ownerId, new Date(Date.now() + 30_000).toISOString()); }, 5_000);
+      const result = await this.agent.run(pending.run.input, {
+        initialMessages: this.context,
+        sessionId: this.sessionId,
+        runId: pending.run.id,
+        checkpoint: { save: (checkpoint) => this.store!.saveCheckpoint(checkpoint) },
+        resumeCheckpoint: pending.checkpoint,
+      });
+      const finishedAt = new Date().toISOString();
+      clearInterval(heartbeat);
+      const runResult: RunResult = { ...result, status: "completed", sessionId: this.sessionId, runId: pending.run.id, startedAt: pending.run.startedAt, finishedAt };
+      const newMessages = result.messages.slice(this.context.length);
+      await this.store!.completeRun({ run: { id: pending.run.id, sessionId: this.sessionId, status: "completed", input: pending.run.input, finalText: result.finalText, startedAt: pending.run.startedAt, finishedAt, result }, messages: newMessages.map((message, index) => ({ sessionId: this.sessionId, runId: pending.run.id, sequence: this.context.length + index, message, createdAt: finishedAt })) });
+      this.context = [...result.messages];
+      this.resumable = undefined;
+      this.runHistory.push(runResult);
+      return runResult;
+    } catch (error) {
+      if (heartbeat) clearInterval(heartbeat);
+      await this.store!.failRun({ sessionId: this.sessionId, runId: pending.run.id, status: "failed", error: error instanceof Error ? error.message : String(error), finishedAt: new Date().toISOString() });
+      throw error;
+    } finally { this.running = false; }
   }
 
   /** 顺序执行一次 run；成功的完整消息上下文才会提交到 Session。 */
