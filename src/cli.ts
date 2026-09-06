@@ -136,7 +136,6 @@
     // 单轮 tracker 跨 REPL 输入复用，因此每次 finish 都以此前 checkpoint 为基准。
     let runTracker = new RunChangeTracker({ root: options.root, sessionId: options.session.sessionId, reuseBaseline: true });
     await sessionTracker.start();
-    await runTracker.start();
     const readline = createInterface({ input, output, terminal: Boolean((input as NodeJS.ReadStream).isTTY && (output as NodeJS.WriteStream).isTTY) });
     try {
       if (readline.terminal) output.write("coding-agent> ");
@@ -153,13 +152,12 @@
           // 失败 run 的工作区状态不适合作为下一轮 checkpoint，重新建立基线。
           await runTracker.dispose();
           runTracker = new RunChangeTracker({ root: options.root, sessionId: options.session.sessionId, reuseBaseline: true });
-          await runTracker.start();
         }
         if (readline.terminal) output.write("coding-agent> ");
       }
     } finally {
       readline.close();
-      options.session.close();
+      await options.session.close();
       await runTracker.dispose();
       const diff = await sessionTracker.finish();
       if (diff.text) output.write(`\nSession changes:\n${diff.text}\n`);

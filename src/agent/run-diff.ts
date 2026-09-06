@@ -84,7 +84,7 @@ interface FallbackFile { readonly absolutePath: string; readonly relativePath: s
 /** 使用磁盘基线和轻量索引捕获整个 Agent run 的文件变化，避免把工作区内容留在内存。 */
 export class RunChangeTracker {
   readonly sessionId: string;
-  readonly runId: string;
+  private runIdValue: string;
   private readonly root?: string;
   private readonly contextLines: number;
   private readonly maxDiffChars: number;
@@ -100,9 +100,9 @@ export class RunChangeTracker {
 
   constructor(options: RunChangeTrackerOptions = {}) {
     this.sessionId = options.sessionId ?? `sess_${crypto.randomUUID()}`;
-    this.runId = options.runId ?? `run_${crypto.randomUUID()}`;
+    this.runIdValue = options.runId ?? `run_${crypto.randomUUID()}`;
     validateId(this.sessionId, "sessionId");
-    validateId(this.runId, "runId");
+    validateId(this.runIdValue, "runId");
     this.root = options.root === undefined ? undefined : path.resolve(options.root);
     this.contextLines = options.contextLines ?? DEFAULT_CONTEXT_LINES;
     this.maxDiffChars = options.maxDiffChars ?? DEFAULT_MAX_DIFF_CHARS;
@@ -118,11 +118,25 @@ export class RunChangeTracker {
     assertInteger(this.maxSnapshotBytes, "maxSnapshotBytes", 1);
   }
 
-  /** 创建唯一 baseline 目录；mkdtemp 由操作系统排他创建，避免目录冲突和覆盖。 */
-  async start(): Promise<void> {
-    if (!this.root || this.baseline) return;
+  get runId(): string { return this.runIdValue; }
+
+  /**
+   * 首次运行建立完整 baseline；复用时只创建本轮目录，索引继续引用此前 run 的文件基线。
+   * 这样 runId 始终对应实际执行，而不是被错误地固定为 tracker 的创建时间。
+   */
+  async start(runId?: string): Promise<void> {
+    if (!this.root) return;
+    if (runId !== undefined) validateId(runId, "runId");
+    if (this.baseline) {
+      if (!this.reuseBaseline || runId === undefined || runId === this.runIdValue) return;
+      this.runIdValue = runId;
+      this.baselineDirectory = path.join(this.temporaryRoot!, this.sessionId, this.runIdValue, "baseline");
+      await fs.mkdir(this.baselineDirectory, { recursive: true });
+      return;
+    }
+    if (runId !== undefined) this.runIdValue = runId;
     this.temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "coding-agent-baseline-"));
-    this.baselineDirectory = path.join(this.temporaryRoot, this.sessionId, this.runId, "baseline");
+    this.baselineDirectory = path.join(this.temporaryRoot, this.sessionId, this.runIdValue, "baseline");
     await fs.mkdir(this.baselineDirectory, { recursive: true });
     this.baseline = await snapshotWorkspace(this.root, this.snapshotOptions(), this.baselineDirectory);
   }
@@ -141,10 +155,11 @@ export class RunChangeTracker {
 
   /** 异常、取消或超时时释放临时基线目录。 */
   async dispose(): Promise<void> {
-    if (!this.baselineDirectory) return;
     const directory = this.temporaryRoot ?? this.baselineDirectory;
     this.baselineDirectory = undefined;
     this.temporaryRoot = undefined;
+    this.baseline = undefined;
+    if (!directory) return;
     await fs.rm(directory, { recursive: true, force: true });
   }
 
@@ -158,7 +173,7 @@ export class RunChangeTracker {
       const newFile = after.files.get(relativePath);
       if (oldFile?.fileType === "untracked" || newFile?.fileType === "untracked") continue;
       if (sameMetadata(oldFile, newFile)) continue;
-      files.push({ path: relativePath, diff: await renderDiff(relativePath, oldFile, newFile, this.baselineDirectory, this.root!, this.contextLines) });
+      files.push({ path: relativePath, diff: await renderDiff(relativePath, oldFile, newFile, this.root!, this.contextLines) });
     }
     if (this.reuseBaseline) await this.promoteBaseline(after, before);
     return buildResult(this.sessionId, this.runId, files, this.maxDiffChars, before.complete && after.complete, unique([...before.omittedPaths, ...after.omittedPaths]), unique([...before.untrackedPaths, ...after.untrackedPaths]));
@@ -286,7 +301,7 @@ function sameMetadata(before: SnapshotFile | undefined, after: SnapshotFile | un
   return !!before && !!after && before.fileType !== "untracked" && after.fileType !== "untracked" && before.hash === after.hash;
 }
 
-async function renderDiff(relative: string, before: SnapshotFile | undefined, after: SnapshotFile | undefined, baselineDirectory: string | undefined, root: string, context: number): Promise<string> {
+async function renderDiff(relative: string, before: SnapshotFile | undefined, after: SnapshotFile | undefined, root: string, context: number): Promise<string> {
   if (before?.fileType === "binary" || after?.fileType === "binary") return `Binary files a/${diffPath(relative)} and b/${diffPath(relative)} differ`;
   const oldContent = before?.baselinePath ? await fs.readFile(before.baselinePath, "utf8") : "";
   const newContent = after ? await fs.readFile(path.join(root, relative), "utf8") : "";

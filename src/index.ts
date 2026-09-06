@@ -1,5 +1,9 @@
 export { Agent } from "./agent/agent.ts";
+export { DefaultContextManager, createDeterministicContextManager } from "./agent/context-manager.ts";
+export { ToolOutputStore } from "./agent/tool-output-store.ts";
 export { Session } from "./agent/session.ts";
+export { SessionManager } from "./agent/session-manager.ts";
+export { SqliteSessionStore } from "./agent/sqlite-session-store.ts";
 export { RunChangeTracker, cleanupStaleBaselineDirectories } from "./agent/run-diff.ts";
 export { ToolRegistry } from "./tools/tool-registry.ts";
 export { ApprovalDeniedError, DefaultApprovalPolicy, SecurityPolicy, WorkspacePolicy, WorkspaceSecurityError } from "./tools/security.ts";
@@ -29,6 +33,13 @@ export type {
   ModelFinishReason,
   ModelRequest,
   ModelResponse,
+  ModelUsage,
+  ContextBudget,
+  ContextManager,
+  ContextResult,
+  ContextSummary,
+  ContextDegradation,
+  ContextStageResult,
   ModelToolDefinition,
   Role,
   SystemMessage,
@@ -42,9 +53,12 @@ export type {
   ToolMessage,
   UserMessage,
   RunEvent,
+  CheckpointRecord,
+  CheckpointSink,
 } from "./agent/types.ts";
 export type { RunDiff, RunDiffFile } from "./agent/run-diff.ts";
 export type { FailedRun, RunResult, RunStatus, SessionResult, SessionRun, SessionStatus, SessionOptions } from "./agent/session.ts";
+export type { CompleteRunInput, PersistedRunStatus, PersistedSessionStatus, SessionRecord, SessionStore, StoredMessage, StoredRunRecord } from "./agent/session-store.ts";
 export type { ToolDefinition } from "./tools/tool-schema.ts";
 export type { ModelTransportErrorCode, ModelTransportErrorOptions } from "./model/errors.ts";
 export type { FetchHttpTransportOptions, FetchLike, HttpRequest, HttpResponse, HttpTransport } from "./model/transport.ts";

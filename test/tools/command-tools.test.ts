@@ -7,6 +7,7 @@ import { createRunCommandTool, type RunCommandPreview, type RunCommandResult } f
 import { ApprovalDeniedError, SecurityPolicy, WorkspacePolicy, WorkspaceSecurityError } from "../../src/tools/security.ts";
 import { ToolRegistry } from "../../src/tools/tool-registry.ts";
 import type { Tool, ToolContext } from "../../src/agent/types.ts";
+import { ToolOutputStore } from "../../src/agent/tool-output-store.ts";
 
 async function withWorkspace(run: (root: string) => Promise<void>): Promise<void> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "coding-agent-"));
@@ -99,6 +100,24 @@ test("run_command truncates stdout and stderr independently", async () => {
     assert.equal(result.stderr, "klmnopq");
     assert.equal(result.stdoutTruncated, true);
     assert.equal(result.stderrTruncated, true);
+  });
+});
+
+test("run_command streams bytes beyond the model preview limit into artifacts", async () => {
+  await withWorkspace(async (root) => {
+    const artifactRoot = await fs.mkdtemp(path.join(os.tmpdir(), "coding-agent-command-output-"));
+    const store = new ToolOutputStore({ rootDirectory: artifactRoot });
+    try {
+      const tool = createRunCommandTool(new WorkspacePolicy({ root }), { maxStdoutBytes: 5, maxStderrBytes: 5 });
+      const result = await executeTool(tool, {
+        command: process.execPath,
+        args: ["-e", "process.stdout.write('abcdefghij'); process.stderr.write('klmnopqrst')"],
+      }, { messages: [], sessionId: "session", runId: "run", toolOutputStore: store }) as RunCommandResult;
+      assert.equal(result.stdout, "abcde");
+      assert.equal(result.stderr, "klmno");
+      assert.equal((await store.read("session", "run", result.stdoutArtifact!.artifactId, 0, 20)).content, "abcdefghij");
+      assert.equal((await store.read("session", "run", result.stderrArtifact!.artifactId, 0, 20)).content, "klmnopqrst");
+    } finally { await store.dispose(); }
   });
 });
 

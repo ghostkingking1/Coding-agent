@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import { Agent } from "../../src/agent/agent.ts";
+import { RunChangeTracker } from "../../src/agent/run-diff.ts";
 import { Session } from "../../src/agent/session.ts";
 import type { Message, ModelClient, ModelResponse } from "../../src/agent/types.ts";
 
@@ -68,11 +72,33 @@ test("enforces session lifecycle and rejects overlapping runs", async () => {
   const pending = session.run("long");
   await new Promise<void>((resolve) => setImmediate(resolve));
   await assert.rejects(() => session.run("overlap"), /already has a run/);
-  assert.throws(() => session.close(), /run is in progress/);
+  await assert.rejects(() => session.close(), /run is in progress/);
   release?.();
   await pending;
-  const closed = session.close();
+  const closed = await session.close();
   assert.equal(closed.status, "closed");
   await assert.rejects(() => session.run("after close"), /Session is closed/);
   assert.throws(() => new Session(new Agent(model), { sessionId: "bad id" }), /sessionId/);
+});
+
+test("uses the Session run ID for each reusable baseline checkpoint", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "coding-agent-session-index-"));
+  const tracker = new RunChangeTracker({ root, reuseBaseline: true });
+  const model: ModelClient = {
+    provider: "fake",
+    model: "fake-model",
+    capabilities,
+    async generate(): Promise<ModelResponse> { return { message: { role: "assistant", content: "done" } }; },
+  };
+  try {
+    const session = new Session(new Agent(model), { sessionId: "session-index", changeTracker: tracker });
+    const first = await session.run("first");
+    const second = await session.run("second");
+    assert.equal(first.diff?.runId, first.runId);
+    assert.equal(second.diff?.runId, second.runId);
+    assert.notEqual(first.diff?.runId, second.diff?.runId);
+    await tracker.dispose();
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
 });

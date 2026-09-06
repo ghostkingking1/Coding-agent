@@ -85,6 +85,64 @@ export interface ModelResponse {
   readonly message: AssistantMessage;
   /** 模型本轮结束原因。 */
   readonly finishReason?: ModelFinishReason;
+  readonly usage?: ModelUsage;
+}
+
+/** 供应商归一化后的模型用量；缺失字段由 adapter 省略或置零。 */
+export interface ModelUsage {
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly totalTokens: number;
+  readonly cacheReadTokens?: number;
+  readonly cacheWriteTokens?: number;
+  readonly cacheSavedTokens?: number;
+}
+
+export interface ContextBudget {
+  readonly maxInputTokens: number;
+  readonly reservedOutputTokens?: number;
+  readonly compactThresholdRatio?: number;
+  readonly recentTurns?: number;
+  readonly maxToolOutputTokens?: number;
+}
+
+export interface ContextSummary {
+  readonly summaryId: string;
+  readonly sourceMessageIndexes: readonly number[];
+  readonly content: string;
+}
+export interface ContextCheckpoint {
+  readonly sessionId: string;
+  readonly coveredThroughSequence: number;
+  readonly sourcePrefixHash: string;
+  readonly summarySegments: readonly ContextSummary[];
+  readonly retainedTailStart: number;
+  readonly updatedAt: string;
+}
+
+export type ContextDegradation = "tool_output_truncated" | "snipped" | "context_collapsed" | "old_messages_summarized" | "current_request_exceeds_budget";
+
+export interface ContextStageResult { readonly name: string; readonly estimatedTokens: number; }
+
+export interface ContextResult {
+  readonly messages: readonly Message[];
+  readonly estimatedTokens: number;
+  readonly rawEstimatedTokens: number;
+  readonly calibrationFactor: number;
+  readonly budget: number;
+  readonly compacted: boolean;
+  readonly stages: readonly ContextStageResult[];
+  readonly summaries: readonly ContextSummary[];
+  readonly degradation?: ContextDegradation;
+}
+
+export interface ContextManager {
+  estimate(messages: readonly Message[]): number;
+  compact(messages: readonly Message[], budget: number | ContextBudget): Promise<ContextResult>;
+  observeUsage?(context: ContextResult, usage: ModelUsage): void;
+  buildRequestContext(sessionId: string, input: string): Promise<readonly Message[]>;
+  exportCheckpoint?(sessionId: string, messages: readonly Message[], budget?: ContextBudget): Promise<ContextCheckpoint | undefined>;
+  restoreCheckpoint?(checkpoint: ContextCheckpoint, messages: readonly Message[]): boolean;
 }
 
 /** 提供给模型的工具定义，不包含本地执行实现或安全策略。 */
@@ -113,6 +171,7 @@ export interface ModelRequest {
   readonly tools: readonly ModelToolDefinition[];
   /** 取消当前模型请求的信号。 */
   readonly signal?: AbortSignal;
+  readonly contextResult?: ContextResult;
 }
 
 /** 真实 provider 和测试替身共同实现的统一模型接口。 */
@@ -132,6 +191,10 @@ export interface ToolContext {
   readonly messages: readonly Message[];
   /** 用于取消当前工具工作的信号。 */
   readonly signal?: AbortSignal;
+  /** 临时工具输出只能在产生它的会话和运行内读取。 */
+  readonly sessionId?: string;
+  readonly runId?: string;
+  readonly toolOutputStore?: import("./tool-output-store.ts").ToolOutputStore;
   /** 当前 Agent 运行的变更记录器，供写入工具在副作用前保存原始内容。 */
   readonly changeTracker?: {
     recordBeforeWrite(absolutePath: string, relativePath: string, originalContent: string): void;
@@ -180,6 +243,9 @@ export interface AgentOptions {
   includeRunDiff?: boolean;
   /** 可注入工作区范围的 tracker，便于 CLI 或测试控制快照范围。 */
   changeTracker?: import("./run-diff.ts").RunChangeTracker;
+  contextManager?: ContextManager;
+  contextBudget?: ContextBudget;
+  toolOutputStore?: import("./tool-output-store.ts").ToolOutputStore;
 }
 
 /** 单次 Agent run 可由 Session 注入的上下文和标识。 */
@@ -192,7 +258,21 @@ export interface AgentRunOptions {
   runId?: string;
   /** 可选的本次运行变更跟踪器；由 Session/CLI 注入以隔离每轮基线。 */
   changeTracker?: import("./run-diff.ts").RunChangeTracker;
+  checkpoint?: CheckpointSink;
+  replayToolResults?: ReadonlyMap<string, string>;
 }
+
+export interface CheckpointRecord {
+  readonly sessionId: string;
+  readonly runId: string;
+  readonly step: number;
+  readonly phase: "model" | "tool";
+  readonly messages: readonly Message[];
+  readonly toolResults: readonly { readonly key: string; readonly toolCallId: string; readonly toolName: string; readonly status: "completed" | "failed"; readonly result: string }[];
+  readonly updatedAt: string;
+}
+
+export interface CheckpointSink { save(checkpoint: CheckpointRecord): Promise<void>; }
 
 export interface AgentResult {
   /** Agent 最终生成的文本。 */
