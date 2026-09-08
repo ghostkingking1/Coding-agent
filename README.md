@@ -60,6 +60,17 @@ docs/
 
 ## 功能更新日志
 
+### 2026-09-08
+
+- 增加 Session SQLite 持久化、run lease 和工作区匹配校验；已完成 run 可恢复上下文，过期的中断 run 可显式接管。
+- 增加 run 内 checkpoint 与工具调用幂等键；恢复时复用已完成工具结果，未完成工具仍经过原审批策略后执行。
+- 增加受限工具输出 artifact 存储和分页读取工具，避免把大型 stdout、stderr 或工具结果直接塞入模型上下文。
+- 增加 token 上下文预算、主动压缩、历史摘要复用和摘要 checkpoint；保留最近轮次与完整 Session transcript。
+- 增加多工具批次编排：只有显式声明可并行且不存在冲突键的调用才并发执行，结果仍按模型声明顺序回传。
+- `ModelClient` 增加可选流式事件；OpenAI-compatible adapter 支持 Chat Completions SSE 的文本和工具调用增量，CLI 可实时显示文本与重试状态。
+- 增加模型错误分类及有限重试/退避：只重试网络、超时、限流和服务端错误，支持 `Retry-After`；认证、取消、协议和资源限制错误不会重试。
+- SQLite 新增 append-only `audit_events` 审计记录，保存 run 生命周期、模型尝试/重试、流式完成和工具批次摘要，不保存 API key、认证头、完整模型请求或无限工具输出。
+
 ### 2026-08-29
 
 - 完成基础 coding agent 执行闭环，支持用户请求、模型调用、工具调用、工具结果回传和最终回答。

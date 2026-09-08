@@ -59,4 +59,4 @@
 
 ## 当前边界
 
-当前实现适合在明确审批和受控工作区中进行实验性验证。流式输出、持久审计、上下文预算、checkpoint 恢复、OS 级 sandbox，以及 Anthropic 和 OpenAI Responses adapter 仍属于后续工作，详见[官方能力差距报告](official-coding-agent-gap-analysis.md)。
+当前实现适合在明确审批和受控工作区中进行实验性验证。OS 级 sandbox、Anthropic 和 OpenAI Responses adapter、外部工具协议及 skills 仍属于后续工作，详见[官方能力差距报告](official-coding-agent-gap-analysis.md)。
