@@ -48,8 +48,12 @@ export class DefaultContextManager implements ContextManager {
 
   async compact(messages: readonly Message[], budget: number | ContextBudget): Promise<ContextResult> {
     const limit = typeof budget === "number" ? budget : budget.maxInputTokens;
-    const compactLimit = typeof budget === "number" ? limit : Math.max(1, Math.floor(limit * (budget.compactThresholdRatio ?? 1)));
     if (!Number.isInteger(limit) || limit < 1) throw new Error("context budget must be a positive integer");
+    const thresholdRatio = typeof budget === "number" ? 1 : budget.compactThresholdRatio ?? 0.75;
+    if (!Number.isFinite(thresholdRatio) || thresholdRatio <= 0 || thresholdRatio > 1) {
+      throw new Error("context compact threshold ratio must be within (0, 1]");
+    }
+    const compactLimit = Math.max(1, Math.floor(limit * thresholdRatio));
     const indexed = messages.map((message, sourceIndex) => ({ message: cloneMessage(message), sourceIndexes: [sourceIndex] }));
     const system = indexed.filter(({ message }) => message.role === "system");
     const currentUser = [...indexed].reverse().find(({ message }) => message.role === "user");
@@ -72,14 +76,7 @@ export class DefaultContextManager implements ContextManager {
     stages.push({ name: "budget_reduction", estimatedTokens: this.estimate(toMessages(view)) });
     view = view.map((entry) => entry.message.role === "tool" ? { ...entry, message: { ...entry.message, content: snip(entry.message.content) } } : entry);
     stages.push({ name: "snip", estimatedTokens: this.estimate(toMessages(view)) });
-    if (this.estimate(toMessages(view)) <= compactLimit) return this.result(view, limit, messages, stages, summaries, degradation);
-
-    const currentTurn = turnNumber(view, currentUser?.sourceIndexes[0]);
-    const collapsed = collapseHistoricalToolChains(view, currentTurn);
-    if (collapsed.changed) degradation = "context_collapsed";
-    view = collapsed.messages;
-    stages.push({ name: "context_collapse", estimatedTokens: this.estimate(toMessages(view)) });
-    if (this.estimate(toMessages(view)) <= compactLimit) return this.result(view, limit, messages, stages, summaries, degradation);
+    if (this.estimate(toMessages(view)) <= compactLimit) return this.result(view, limit, compactLimit, messages, stages, summaries, degradation);
 
     const recentTurns = typeof budget === "number" ? 10 : budget.recentTurns ?? 10;
     const retained = retainRecentTurnEntries(view, recentTurns, currentUser?.sourceIndexes[0]);
@@ -95,16 +92,21 @@ export class DefaultContextManager implements ContextManager {
     }
     stages.push({ name: "auto_compact", estimatedTokens: this.estimate(toMessages(view)) });
     if (this.estimate(toMessages(view)) > limit) {
+      const currentTurn = turnNumber(view, currentUser?.sourceIndexes[0]);
+      const collapsed = collapseHistoricalToolChains(view, currentTurn);
+      if (collapsed.changed) degradation = "context_collapsed";
+      view = collapsed.messages;
+      stages.push({ name: "context_collapse", estimatedTokens: this.estimate(toMessages(view)) });
       // 摘要已覆盖全部旧轮次；最终视图只保留系统提示、摘要和当前轮次。
       const summaryEntries = view.filter(({ message }) => message.role === "system" || (message.role === "assistant" && message.content.startsWith("[历史摘要 ")));
       const currentEntries = retainRecentTurnEntries(view, 1, currentUser?.sourceIndexes[0]).filter(({ message }) => message.role !== "system");
       view = shrinkSummary([...summaryEntries, ...currentEntries], limit, (entries) => this.estimate(toMessages(entries)));
     }
     if (this.estimate(toMessages(view)) > limit) throw new Error("Context exceeds the configured budget after compaction");
-    return this.result(view, limit, messages, stages, summaries, degradation);
+    return this.result(view, limit, compactLimit, messages, stages, summaries, degradation);
   }
 
-  private result(view: readonly IndexedMessage[], budget: number, original: readonly Message[], stages: readonly ContextStageResult[], summaries: readonly ContextSummary[], degradation?: ContextDegradation): ContextResult {
+  private result(view: readonly IndexedMessage[], budget: number, compactionThreshold: number, original: readonly Message[], stages: readonly ContextStageResult[], summaries: readonly ContextSummary[], degradation?: ContextDegradation): ContextResult {
     const output = toMessages(view);
     return {
       messages: output,
@@ -112,6 +114,7 @@ export class DefaultContextManager implements ContextManager {
       rawEstimatedTokens: this.rawEstimate(output),
       calibrationFactor: this.calibrationFactor,
       budget,
+      compactionThreshold,
       compacted: this.estimate(output) < this.estimate(original),
       stages,
       summaries,

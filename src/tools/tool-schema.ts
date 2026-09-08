@@ -15,6 +15,8 @@ export interface ToolDefinition<TSchema extends ToolInputSchema> {
   readonly name: string;
   readonly description: string;
   readonly capabilities: readonly ToolCapability[];
+  readonly parallelizable?: boolean;
+  readonly conflictKey?: (input: z.output<TSchema>) => string | undefined;
   readonly inputSchema: TSchema;
   /** 发送给模型的 JSON Schema；本地执行仍必须经过 inputSchema 校验。 */
   readonly modelInputSchema?: JsonSchema;
@@ -31,6 +33,8 @@ export function defineTool<TSchema extends ToolInputSchema>(definition: ToolDefi
       capabilities: definition.capabilities,
       inputSchema: definition.inputSchema,
       modelInputSchema: definition.modelInputSchema,
+      parallelizable: definition.parallelizable,
+      conflictKey: definition.conflictKey as ((input: unknown) => string | undefined) | undefined,
     },
     preview: definition.preview,
     execute: definition.execute,

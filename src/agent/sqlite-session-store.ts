@@ -1,9 +1,9 @@
 import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
-import type { CheckpointRecord, ContextCheckpoint, Message } from "./types.ts";
+import type { AuditEvent, CheckpointRecord, ContextCheckpoint, Message } from "./types.ts";
 import type { CompleteRunInput, PersistedRunStatus, SessionRecord, SessionStore, StoredMessage, StoredRunRecord } from "./session-store.ts";
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 
 /** SQLite 持久化仅保存结构化审计数据；文件 checkpoint 内容继续属于文件系统层。 */
 export class SqliteSessionStore implements SessionStore {
@@ -109,6 +109,17 @@ export class SqliteSessionStore implements SessionStore {
     return row ? { sessionId: row.session_id, coveredThroughSequence: row.covered_through_sequence, sourcePrefixHash: row.source_prefix_hash, summarySegments: JSON.parse(row.summary_segments_json) as ContextCheckpoint["summarySegments"], retainedTailStart: row.retained_tail_start, updatedAt: row.updated_at } : undefined;
   }
 
+  async record(event: AuditEvent): Promise<void> {
+    const sessionId = event.sessionId ?? "unknown";
+    const sequence = event.sequence ?? Number((this.database.prepare("SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence FROM audit_events WHERE session_id = ?").get(sessionId) as { sequence: number }).sequence);
+    this.database.prepare("INSERT INTO audit_events (session_id, run_id, sequence, event_type, step, tool_call_id, tool_name, attempt, status, error_code, request_id, metadata_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(sessionId, event.runId ?? null, sequence, event.eventType, event.step ?? null, event.toolCallId ?? null, event.toolName ?? null, event.attempt ?? null, event.status ?? null, event.errorCode ?? null, event.requestId ?? null, event.metadata ? JSON.stringify(event.metadata) : null, event.createdAt ?? new Date().toISOString());
+  }
+
+  async listAuditEvents(sessionId: string, runId?: string): Promise<readonly AuditEvent[]> {
+    const rows = (runId ? this.database.prepare("SELECT * FROM audit_events WHERE session_id = ? AND run_id = ? ORDER BY sequence ASC").all(sessionId, runId) : this.database.prepare("SELECT * FROM audit_events WHERE session_id = ? ORDER BY sequence ASC").all(sessionId)) as unknown as AuditRow[];
+    return rows.map((row) => ({ sessionId: row.session_id, ...(row.run_id ? { runId: row.run_id } : {}), sequence: row.sequence, eventType: row.event_type, ...(row.step === null ? {} : { step: row.step }), ...(row.tool_call_id ? { toolCallId: row.tool_call_id } : {}), ...(row.tool_name ? { toolName: row.tool_name } : {}), ...(row.attempt === null ? {} : { attempt: row.attempt }), ...(row.status ? { status: row.status } : {}), ...(row.error_code ? { errorCode: row.error_code } : {}), ...(row.request_id ? { requestId: row.request_id } : {}), ...(row.metadata_json ? { metadata: JSON.parse(row.metadata_json) } : {}), createdAt: row.created_at }));
+  }
+
   async close(): Promise<void> {
     // 关闭前完成 WAL checkpoint，尽量在释放句柄前把日志合并回主库。
     try { this.database.exec("PRAGMA wal_checkpoint=FULL"); } catch { /* 数据库已损坏时仍继续释放句柄。 */ }
@@ -145,6 +156,10 @@ export class SqliteSessionStore implements SessionStore {
       this.transaction(() => { this.database.exec("CREATE TABLE context_checkpoints (session_id TEXT PRIMARY KEY REFERENCES sessions(id), covered_through_sequence INTEGER NOT NULL, source_prefix_hash TEXT NOT NULL, summary_segments_json TEXT NOT NULL, retained_tail_start INTEGER NOT NULL, updated_at TEXT NOT NULL);"); this.database.exec("INSERT INTO schema_migrations(version) VALUES (4)"); });
       return;
     }
+    if (current === 4) {
+      this.transaction(() => { this.database.exec("CREATE TABLE audit_events (id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, run_id TEXT, sequence INTEGER NOT NULL, event_type TEXT NOT NULL, step INTEGER, tool_call_id TEXT, tool_name TEXT, attempt INTEGER, status TEXT, error_code TEXT, request_id TEXT, metadata_json TEXT, created_at TEXT NOT NULL, UNIQUE(session_id, sequence)); CREATE INDEX audit_session_run_idx ON audit_events(session_id, run_id, sequence); INSERT INTO schema_migrations(version) VALUES (5);"); });
+      return;
+    }
     if (current === SCHEMA_VERSION) return;
     this.transaction(() => {
       this.database.exec(`
@@ -155,6 +170,8 @@ export class SqliteSessionStore implements SessionStore {
         CREATE INDEX messages_session_sequence_idx ON messages(session_id, sequence);
         CREATE TABLE checkpoints (session_id TEXT NOT NULL REFERENCES sessions(id), run_id TEXT PRIMARY KEY REFERENCES runs(id), step INTEGER NOT NULL, phase TEXT NOT NULL CHECK(phase IN ('model', 'tool')), payload_json TEXT NOT NULL, updated_at TEXT NOT NULL);
         CREATE TABLE context_checkpoints (session_id TEXT PRIMARY KEY REFERENCES sessions(id), covered_through_sequence INTEGER NOT NULL, source_prefix_hash TEXT NOT NULL, summary_segments_json TEXT NOT NULL, retained_tail_start INTEGER NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE audit_events (id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, run_id TEXT, sequence INTEGER NOT NULL, event_type TEXT NOT NULL, step INTEGER, tool_call_id TEXT, tool_name TEXT, attempt INTEGER, status TEXT, error_code TEXT, request_id TEXT, metadata_json TEXT, created_at TEXT NOT NULL, UNIQUE(session_id, sequence));
+        CREATE INDEX audit_session_run_idx ON audit_events(session_id, run_id, sequence);
         INSERT INTO schema_migrations(version) VALUES (${SCHEMA_VERSION});
       `);
     });
@@ -165,6 +182,7 @@ interface SessionRow { id: string; workspace_root: string; status: "active" | "c
 interface RunRow { id: string; session_id: string; status: PersistedRunStatus; input: string; final_text: string | null; error: string | null; started_at: string; finished_at: string | null; result_json: string | null; owner_id: string | null; lease_until: string | null; }
 interface MessageRow { session_id: string; run_id: string | null; sequence: number; role: Message["role"]; content: string; tool_call_id: string | null; tool_name: string | null; tool_calls_json: string | null; created_at: string; }
 interface ContextCheckpointRow { session_id: string; covered_through_sequence: number; source_prefix_hash: string; summary_segments_json: string; retained_tail_start: number; updated_at: string; }
+interface AuditRow { session_id: string; run_id: string | null; sequence: number; event_type: string; step: number | null; tool_call_id: string | null; tool_name: string | null; attempt: number | null; status: string | null; error_code: string | null; request_id: string | null; metadata_json: string | null; created_at: string; }
 function sessionFromRow(row: SessionRow): SessionRecord { return { id: row.id, workspaceRoot: row.workspace_root, status: row.status, createdAt: row.created_at, updatedAt: row.updated_at, schemaVersion: row.schema_version }; }
 function runFromRow(row: RunRow): StoredRunRecord { return { id: row.id, sessionId: row.session_id, status: row.status, input: row.input, ...(row.final_text === null ? {} : { finalText: row.final_text }), ...(row.error === null ? {} : { error: row.error }), startedAt: row.started_at, ...(row.finished_at === null ? {} : { finishedAt: row.finished_at }), ...(row.result_json === null ? {} : { result: JSON.parse(row.result_json) as StoredRunRecord["result"] }), ...(row.owner_id === null ? {} : { ownerId: row.owner_id }), ...(row.lease_until === null ? {} : { leaseUntil: row.lease_until }) }; }
 function messageFromRow(row: MessageRow): Message { if (row.role === "tool") return { role: "tool", content: row.content, toolCallId: row.tool_call_id!, toolName: row.tool_name! }; if (row.role === "assistant") return { role: "assistant", content: row.content, ...(row.tool_calls_json ? { toolCalls: JSON.parse(row.tool_calls_json) } : {}) }; return { role: row.role, content: row.content }; }

@@ -108,6 +108,7 @@ export class Session {
     try {
       const leaseUntil = new Date(Date.now() + 30_000).toISOString();
       await this.store!.resumeRun(this.sessionId, pending.run.id, this.ownerId, leaseUntil);
+      await this.store!.record({ sessionId: this.sessionId, runId: pending.run.id, eventType: "run_resumed" });
       heartbeat = setInterval(() => { void this.store?.heartbeatRun(this.sessionId, pending.run.id, this.ownerId, new Date(Date.now() + 30_000).toISOString()); }, 5_000);
       const result = await this.agent.run(pending.run.input, {
         initialMessages: this.context,
@@ -121,6 +122,7 @@ export class Session {
       const runResult: RunResult = { ...result, status: "completed", sessionId: this.sessionId, runId: pending.run.id, startedAt: pending.run.startedAt, finishedAt };
       const newMessages = result.messages.slice(this.context.length);
       await this.store!.completeRun({ run: { id: pending.run.id, sessionId: this.sessionId, status: "completed", input: pending.run.input, finalText: result.finalText, startedAt: pending.run.startedAt, finishedAt, result }, messages: newMessages.map((message, index) => ({ sessionId: this.sessionId, runId: pending.run.id, sequence: this.context.length + index, message, createdAt: finishedAt })) });
+      await this.store!.record({ sessionId: this.sessionId, runId: pending.run.id, eventType: "run_completed" });
       this.context = [...result.messages];
       this.resumable = undefined;
       this.runHistory.push(runResult);
@@ -128,6 +130,7 @@ export class Session {
     } catch (error) {
       if (heartbeat) clearInterval(heartbeat);
       await this.store!.failRun({ sessionId: this.sessionId, runId: pending.run.id, status: "failed", error: error instanceof Error ? error.message : String(error), finishedAt: new Date().toISOString() });
+      await this.store!.record({ sessionId: this.sessionId, runId: pending.run.id, eventType: "run_failed", status: "failed" });
       throw error;
     } finally { this.running = false; }
   }
@@ -145,6 +148,7 @@ export class Session {
       await this.initialize();
       const leaseUntil = new Date(Date.now() + 30_000).toISOString();
       await this.store?.startRun({ id: runId, sessionId: this.sessionId, status: "running", input, startedAt, ownerId: this.ownerId, leaseUntil });
+      await this.store?.record({ sessionId: this.sessionId, runId, eventType: "run_started" });
       heartbeat = this.store ? setInterval(() => { void this.store?.heartbeatRun(this.sessionId, runId, this.ownerId, new Date(Date.now() + 30_000).toISOString()); }, 5_000) : undefined;
       const changeTracker = options.changeTracker ?? this.changeTracker;
       // 由 Session 分配的 runId 决定本轮 baseline 目录，保证磁盘审计身份和运行记录一致。
@@ -155,6 +159,7 @@ export class Session {
         runId,
         changeTracker,
         checkpoint: this.store ? { save: (checkpoint) => this.store!.saveCheckpoint(checkpoint) } : undefined,
+        auditSink: this.store ? { record: (event) => this.store!.record(event) } : undefined,
       });
       const finishedAt = new Date().toISOString();
       if (heartbeat) clearInterval(heartbeat);
@@ -164,6 +169,7 @@ export class Session {
         run: { id: runId, sessionId: this.sessionId, status: "completed", input, finalText: result.finalText, startedAt, finishedAt, result },
         messages: newMessages.map((message, index) => ({ sessionId: this.sessionId, runId, sequence: this.context.length + index, message, createdAt: finishedAt })),
       });
+      await this.store?.record({ sessionId: this.sessionId, runId, eventType: "run_completed" });
       this.context = [...result.messages];
       const contextCheckpoint = await this.agent.exportContextCheckpoint(this.sessionId, this.context);
       if (contextCheckpoint) await this.store?.saveContextCheckpoint(contextCheckpoint);
@@ -173,6 +179,7 @@ export class Session {
       if (heartbeat) clearInterval(heartbeat);
       const finishedAt = new Date().toISOString();
       await this.store?.failRun({ sessionId: this.sessionId, runId, status: "failed", error: error instanceof Error ? error.message : String(error), finishedAt });
+      await this.store?.record({ sessionId: this.sessionId, runId, eventType: "run_failed", status: "failed" });
       this.runHistory.push({
         sessionId: this.sessionId,
         runId,

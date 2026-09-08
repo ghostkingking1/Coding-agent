@@ -20,6 +20,22 @@ test("keeps system prompt, current request, and recent turns while summarizing o
   assert.equal(messages[1].content, "old request ".repeat(20));
 });
 
+test("proactively summarizes old history at the default 75 percent threshold", async () => {
+  let summaryCalls = 0;
+  const manager = new DefaultContextManager({ summarize: async () => { summaryCalls += 1; return "old work"; } });
+  const messages: Message[] = [
+    { role: "user", content: "a".repeat(120) },
+    { role: "assistant", content: "b".repeat(120) },
+    { role: "user", content: "current request text" },
+  ];
+  const result = await manager.compact(messages, { maxInputTokens: 100, recentTurns: 1 });
+  assert.equal(result.compactionThreshold, 75);
+  assert.equal(summaryCalls, 1);
+  assert.equal(result.degradation, "old_messages_summarized");
+  assert.ok(result.estimatedTokens < 75);
+  assert.equal(messages[0].content.length, 120);
+});
+
 test("truncates oversized tool output without mutating the source", async () => {
   const tool: Message = { role: "tool", content: "a".repeat(10_000), toolCallId: "1", toolName: "read_file" };
   const messages: Message[] = [{ role: "user", content: "inspect" }, tool];

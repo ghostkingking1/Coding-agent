@@ -5,6 +5,7 @@ import type {
   ModelFinishReason,
   ModelRequest,
   ModelResponse,
+  ModelStreamEvent,
   ModelUsage,
   ModelToolDefinition,
   ToolCall,
@@ -87,12 +88,70 @@ export class OpenAICompatibleModel implements ModelClient {
     });
     return parseOpenAIResponse(response);
   }
+
+  async *generateStream(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
+    const payload = {
+      model: this.model,
+      messages: request.messages.map(toOpenAIMessage),
+      ...(request.tools.length > 0 ? { tools: request.tools.map(toOpenAITool) } : {}),
+      stream: true,
+    };
+    const headers: Record<string, string> = { "content-type": "application/json", accept: "text/event-stream" };
+    if (this.apiKey) headers.authorization = `Bearer ${this.apiKey}`;
+    const streamRequest: import("./transport.ts").HttpRequest = {
+      url: this.endpoint,
+      init: { method: "POST", redirect: "error", headers, body: JSON.stringify(payload) },
+      signal: request.signal,
+      timeoutMs: this.timeoutMs,
+      maxResponseBytes: this.maxResponseBytes,
+    };
+    const source = this.transport.stream ? this.transport.stream(streamRequest) : bufferedStream(this.transport, streamRequest);
+    let pending = "";
+    for await (const text of source) {
+      pending += text;
+      const lines = pending.split(/\r?\n/);
+      pending = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.startsWith("data:")) continue;
+        const data = line.slice(5).trim();
+        if (data === "[DONE]") { yield { type: "done", finishReason: "stop" }; return; }
+        for (const event of parseStreamChunk(data)) yield event;
+      }
+    }
+    if (pending.startsWith("data:")) {
+      const data = pending.slice(5).trim();
+      if (data === "[DONE]") { yield { type: "done", finishReason: "stop" }; return; }
+      for (const event of parseStreamChunk(data)) yield event;
+    }
+    yield { type: "done" };
+  }
 }
+
+async function* bufferedStream(transport: HttpTransport, request: import("./transport.ts").HttpRequest): AsyncIterable<string> { yield (await transport.request(request)).bodyText; }
 
 interface OpenAICompatibleRequest {
   readonly model: string;
   readonly messages: readonly OpenAICompatibleMessage[];
   readonly tools?: readonly OpenAICompatibleTool[];
+}
+
+function parseStreamChunk(data: string): ModelStreamEvent[] {
+  let value: unknown;
+  try { value = JSON.parse(data); } catch { throw new OpenAICompatibleResponseError("Invalid OpenAI-compatible stream event"); }
+  const response = record(value, "stream event");
+  const choices = array(response.choices, "stream event.choices");
+  const choice = choices.length ? record(choices[0], "stream event.choices[0]") : {};
+  const delta = record(choice.delta ?? {}, "stream event.choices[0].delta");
+  const events: ModelStreamEvent[] = [];
+  if (typeof delta.content === "string" && delta.content) events.push({ type: "text_delta", text: delta.content });
+  if (Array.isArray(delta.tool_calls)) for (const item of delta.tool_calls) {
+    const call = record(item, "stream tool call");
+    const fn = record(call.function ?? {}, "stream tool function");
+    events.push({ type: "tool_call_delta", index: Number.isInteger(call.index) ? call.index as number : 0, ...(typeof call.id === "string" ? { id: call.id } : {}), ...(typeof fn.name === "string" ? { name: fn.name } : {}), ...(typeof fn.arguments === "string" ? { argumentsDelta: fn.arguments } : {}) });
+  }
+  if (response.usage !== undefined) events.push({ type: "usage", usage: parseUsage(response.usage) });
+  if (typeof choice.finish_reason === "string") events.push({ type: "done", finishReason: parseFinishReason(choice.finish_reason) });
+  return events;
 }
 
 type OpenAICompatibleMessage =

@@ -37,9 +37,11 @@ test("CLI system prompt states the workspace, tools, and test verification rule"
 
 test("CLI formats model and tool lifecycle events as terminal summaries", () => {
   assert.equal(formatRunEvent({ type: "model_started", step: 2 }), "[agent] step 2: model request started");
+  assert.equal(formatRunEvent({ type: "tool_batch_started", step: 2, batchId: "run:2", toolCallCount: 2, parallelCount: 2 }), "[agent] step 2: tool batch run:2 started (2 calls, 2 parallel)");
   assert.equal(formatRunEvent({ type: "tool_requested", step: 2, toolName: "run_tests", toolCallId: "call_1" }), "[agent] step 2: requested run_tests (call_1)");
   assert.equal(formatRunEvent({ type: "tool_completed", step: 2, toolName: "run_tests", toolCallId: "call_1" }), "[agent] step 2: completed run_tests (call_1)");
   assert.equal(formatRunEvent({ type: "tool_failed", step: 2, toolName: "run_tests", toolCallId: "call_1", error: "denied" }), "[agent] step 2: failed run_tests (call_1): denied");
+  assert.equal(formatRunEvent({ type: "tool_batch_finished", step: 2, batchId: "run:2", succeeded: 1, failed: 1 }), "[agent] step 2: tool batch run:2 finished (1 succeeded, 1 failed)");
 });
 
 test("interactive CLI runs one Agent per line and prints run and session diffs", async () => {

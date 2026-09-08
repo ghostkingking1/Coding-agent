@@ -28,6 +28,8 @@ export function createWorkspaceTools(policy: WorkspacePolicy): readonly Tool[] {
       name: "read_file",
       description: "Read a UTF-8 text file inside the workspace.",
       capabilities: ["read"],
+      parallelizable: true,
+      conflictKey: (input) => `file:${input.path}`,
       inputSchema: readFileInputSchema,
       modelInputSchema: readFileModelInputSchema,
       async execute(input) {
@@ -40,6 +42,8 @@ export function createWorkspaceTools(policy: WorkspacePolicy): readonly Tool[] {
       name: "list_files",
       description: "List files and directories inside the workspace.",
       capabilities: ["read"],
+      parallelizable: true,
+      conflictKey: (input) => `directory:${input.path}`,
       inputSchema: listFilesInputSchema,
       modelInputSchema: listFilesModelInputSchema,
       async execute(input) {
@@ -68,6 +72,8 @@ export function createWorkspaceTools(policy: WorkspacePolicy): readonly Tool[] {
       name: "search_text",
       description: "Search for a literal string in UTF-8 text files inside the workspace.",
       capabilities: ["read"],
+      parallelizable: true,
+      conflictKey: (input) => `search:${input.path}`,
       inputSchema: searchTextInputSchema,
       modelInputSchema: searchTextModelInputSchema,
       async execute(input) {

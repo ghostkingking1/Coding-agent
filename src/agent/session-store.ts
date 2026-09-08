@@ -1,4 +1,4 @@
-import type { AgentResult, CheckpointRecord, ContextCheckpoint, Message } from "./types.ts";
+import type { AgentResult, AuditEvent, CheckpointRecord, ContextCheckpoint, Message } from "./types.ts";
 
 export type PersistedSessionStatus = "active" | "closed";
 export type PersistedRunStatus = "running" | "completed" | "failed" | "interrupted";
@@ -58,5 +58,7 @@ export interface SessionStore {
   getCheckpoint(sessionId: string, runId: string): Promise<CheckpointRecord | undefined>;
   saveContextCheckpoint(checkpoint: ContextCheckpoint): Promise<void>;
   getContextCheckpoint(sessionId: string): Promise<ContextCheckpoint | undefined>;
+  record(event: AuditEvent): Promise<void>;
+  listAuditEvents(sessionId: string, runId?: string): Promise<readonly AuditEvent[]>;
   close(): Promise<void>;
 }

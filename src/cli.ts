@@ -44,12 +44,20 @@
     switch (event.type) {
       case "model_started":
         return `[agent] step ${event.step}: model request started`;
+      case "model_delta":
+        return event.text;
+      case "model_retry":
+        return `[agent] step ${event.step}: model retry ${event.attempt} after ${event.errorCode} (${event.delayMs}ms)`;
+      case "tool_batch_started":
+        return `[agent] step ${event.step}: tool batch ${event.batchId} started (${event.toolCallCount} calls, ${event.parallelCount} parallel)`;
       case "tool_requested":
         return `[agent] step ${event.step}: requested ${event.toolName} (${event.toolCallId})`;
       case "tool_completed":
         return `[agent] step ${event.step}: completed ${event.toolName} (${event.toolCallId})`;
       case "tool_failed":
         return `[agent] step ${event.step}: failed ${event.toolName} (${event.toolCallId}): ${event.error}`;
+      case "tool_batch_finished":
+        return `[agent] step ${event.step}: tool batch ${event.batchId} finished (${event.succeeded} succeeded, ${event.failed} failed)`;
       case "run_finished":
         return `[agent] finished after ${event.steps} step(s): ${event.stopReason}`;
       case "run_failed":

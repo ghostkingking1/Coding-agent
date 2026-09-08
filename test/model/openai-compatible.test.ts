@@ -17,7 +17,7 @@ class FakeTransport implements HttpTransport {
       status: 200,
       statusText: "OK",
       headers: new Headers(),
-      bodyText: JSON.stringify(this.response),
+      bodyText: typeof this.response === "string" ? this.response : JSON.stringify(this.response),
     };
   }
 
@@ -143,6 +143,20 @@ test("parses multiple OpenAI-compatible tool calls into the unified response", a
     model: "free-model",
     messages: [{ role: "user", content: "Fix it." }],
   });
+});
+
+test("parses OpenAI-compatible SSE text and tool call deltas", async () => {
+  const transport = new FakeTransport([
+    "data: {\"choices\":[{\"delta\":{\"content\":\"hello \"}}]}",
+    "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{}\"}}]}}]}",
+    "data: [DONE]",
+  ].join("\n"));
+  const model = new OpenAICompatibleModel({ baseUrl: "https://gateway.example/v1", model: "free-model", transport });
+  const events = [];
+  for await (const event of model.generateStream!({ messages: [{ role: "user", content: "inspect" }], tools: [] })) events.push(event);
+  assert.equal(events[0]?.type, "text_delta");
+  assert.equal(events.at(-1)?.type, "done");
+  assert.match(transport.lastRequest?.init?.body as string, /\"stream\":true/);
 });
 
 test("rejects malformed tool arguments without exposing their content", async () => {

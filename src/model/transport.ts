@@ -28,6 +28,7 @@ export interface HttpResponse {
 export interface HttpTransport {
   request(request: HttpRequest): Promise<HttpResponse>;
   requestJson<T = unknown>(request: HttpRequest): Promise<T>;
+  stream?(request: HttpRequest): AsyncIterable<string>;
 }
 
 /** Fetch transport 的默认限制与可替换 fetch。 */
@@ -106,6 +107,41 @@ export class FetchHttpTransport implements HttpTransport {
         requestId: response.requestId,
       });
     }
+  }
+
+  async *stream(request: HttpRequest): AsyncIterable<string> {
+    const timeoutMs = request.timeoutMs ?? this.defaultTimeoutMs;
+    const maxBytes = request.maxResponseBytes ?? this.defaultMaxResponseBytes;
+    const controller = new AbortController();
+    let timedOut = false;
+    const abort = () => controller.abort(request.signal?.reason);
+    request.signal?.addEventListener("abort", abort, { once: true });
+    const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
+    try {
+      const response = await this.fetch(request.url, { ...request.init, signal: controller.signal });
+      const requestId = findRequestId(response.headers);
+      if (!response.ok) { await discardBody(response); throw httpError(response.status, response.headers, requestId); }
+      if (!response.body) return;
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let bytes = 0;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          bytes += value.byteLength;
+          if (bytes > maxBytes) { await reader.cancel(); throw responseTooLargeError(requestId); }
+          yield decoder.decode(value, { stream: true });
+        }
+        const tail = decoder.decode();
+        if (tail) yield tail;
+      } finally { reader.releaseLock(); }
+    } catch (error) {
+      if (error instanceof ModelTransportError) throw error;
+      if (timedOut) throw timeoutError();
+      if (request.signal?.aborted) throw abortedError();
+      throw new ModelTransportError("network", "Model request failed before a response was received");
+    } finally { clearTimeout(timeout); request.signal?.removeEventListener("abort", abort); }
   }
 }
 

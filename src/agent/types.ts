@@ -26,6 +26,10 @@ export interface ToolManifest {
   readonly inputSchema?: ToolInputSchema;
   /** 面向模型公开的参数 schema；未声明的工具不会发送给模型。 */
   readonly modelInputSchema?: JsonSchema;
+  /** 只有显式声明后，工具调用才可在同一批次并行执行。 */
+  readonly parallelizable?: boolean;
+  /** 相同冲突键的调用必须串行，避免资源竞态。 */
+  readonly conflictKey?: (input: unknown) => string | undefined;
 }
 
 /** 在工具产生副作用前提交给审批策略的请求。 */
@@ -88,6 +92,12 @@ export interface ModelResponse {
   readonly usage?: ModelUsage;
 }
 
+export type ModelStreamEvent =
+  | { readonly type: "text_delta"; readonly text: string }
+  | { readonly type: "tool_call_delta"; readonly index: number; readonly id?: string; readonly name?: string; readonly argumentsDelta?: string }
+  | { readonly type: "usage"; readonly usage: ModelUsage }
+  | { readonly type: "done"; readonly finishReason?: ModelFinishReason };
+
 /** 供应商归一化后的模型用量；缺失字段由 adapter 省略或置零。 */
 export interface ModelUsage {
   readonly inputTokens: number;
@@ -101,6 +111,7 @@ export interface ModelUsage {
 export interface ContextBudget {
   readonly maxInputTokens: number;
   readonly reservedOutputTokens?: number;
+  /** 达到输入预算的该比例时主动摘要旧历史；默认 0.75。 */
   readonly compactThresholdRatio?: number;
   readonly recentTurns?: number;
   readonly maxToolOutputTokens?: number;
@@ -130,6 +141,7 @@ export interface ContextResult {
   readonly rawEstimatedTokens: number;
   readonly calibrationFactor: number;
   readonly budget: number;
+  readonly compactionThreshold: number;
   readonly compacted: boolean;
   readonly stages: readonly ContextStageResult[];
   readonly summaries: readonly ContextSummary[];
@@ -184,7 +196,34 @@ export interface ModelClient {
   readonly capabilities: ModelCapabilities;
   /** 根据统一请求生成标准化响应。 */
   generate(request: ModelRequest): Promise<ModelResponse>;
+  generateStream?(request: ModelRequest): AsyncIterable<ModelStreamEvent>;
 }
+
+export interface ModelRetryOptions {
+  readonly maxAttempts?: number;
+  readonly maxTotalMs?: number;
+  readonly initialBackoffMs?: number;
+  readonly maxBackoffMs?: number;
+  readonly sleep?: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
+}
+
+export interface AuditEvent {
+  readonly sessionId?: string;
+  readonly runId?: string;
+  readonly sequence?: number;
+  readonly eventType: string;
+  readonly step?: number;
+  readonly toolCallId?: string;
+  readonly toolName?: string;
+  readonly attempt?: number;
+  readonly status?: string;
+  readonly errorCode?: string;
+  readonly requestId?: string;
+  readonly metadata?: JsonObject;
+  readonly createdAt?: string;
+}
+
+export interface AuditSink { record(event: AuditEvent): Promise<void>; }
 
 export interface ToolContext {
   /** 当前运行中的消息上下文。 */
@@ -223,9 +262,13 @@ export interface Tool<TInput = unknown> {
 /** Agent 运行过程中的可观测事件。 */
 export type RunEvent =
   | { type: "model_started"; step: number }
+  | { type: "model_delta"; step: number; text: string }
+  | { type: "model_retry"; step: number; attempt: number; errorCode: string; delayMs: number }
+  | { type: "tool_batch_started"; step: number; batchId: string; toolCallCount: number; parallelCount: number }
   | { type: "tool_requested"; step: number; toolName: string; toolCallId: string }
   | { type: "tool_completed"; step: number; toolName: string; toolCallId: string }
   | { type: "tool_failed"; step: number; toolName: string; toolCallId: string; error: string }
+  | { type: "tool_batch_finished"; step: number; batchId: string; succeeded: number; failed: number }
   | { type: "run_finished"; steps: number; stopReason: AgentResult["stopReason"] }
   | { type: "run_failed"; error: string };
 
@@ -244,8 +287,13 @@ export interface AgentOptions {
   /** 可注入工作区范围的 tracker，便于 CLI 或测试控制快照范围。 */
   changeTracker?: import("./run-diff.ts").RunChangeTracker;
   contextManager?: ContextManager;
+  /** 模型最大输入 token；未配置时 Agent 使用保守的 32,000 token。 */
   contextBudget?: ContextBudget;
   toolOutputStore?: import("./tool-output-store.ts").ToolOutputStore;
+  /** 同一批次允许同时执行的工具调用数。 */
+  maxConcurrentToolCalls?: number;
+  retry?: ModelRetryOptions;
+  auditSink?: AuditSink;
 }
 
 /** 单次 Agent run 可由 Session 注入的上下文和标识。 */
@@ -262,6 +310,7 @@ export interface AgentRunOptions {
   replayToolResults?: ReadonlyMap<string, string>;
   /** 从已持久化的 run 内 checkpoint 继续，不能与新输入拼接。 */
   resumeCheckpoint?: CheckpointRecord;
+  auditSink?: AuditSink;
 }
 
 export interface CheckpointRecord {

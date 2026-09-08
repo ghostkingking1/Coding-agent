@@ -125,6 +125,18 @@ test("SQLite persists the independent context checkpoint", async () => {
   });
 });
 
+test("SQLite persists append-only audit events in sequence order", async () => {
+  await withDatabase(async (root, databasePath) => {
+    const store = new SqliteSessionStore(databasePath);
+    await store.record({ sessionId: "audit-session", runId: "audit-run", eventType: "model_attempt", attempt: 1 });
+    await store.record({ sessionId: "audit-session", runId: "audit-run", eventType: "model_retry", attempt: 1, errorCode: "rate_limited", metadata: { delayMs: 10 } });
+    const events = await store.listAuditEvents("audit-session", "audit-run");
+    assert.deepEqual(events.map((event) => event.eventType), ["model_attempt", "model_retry"]);
+    assert.equal(events[1]?.metadata?.delayMs, 10);
+    await store.close();
+  });
+});
+
 test("recovery resumes from a tool checkpoint without replaying the completed tool", async () => {
   await withDatabase(async (root, databasePath) => {
     const store = new SqliteSessionStore(databasePath);

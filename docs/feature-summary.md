@@ -47,6 +47,8 @@
 - run diff 现在以 Agent 运行前后的工作区快照为事实来源，可发现 `run_command` 和 `run_tests` 间接产生的新增、修改、删除文件；默认忽略隐藏目录、`.git` 和 `node_modules`，并限制文件数量、单文件大小和输出大小。
 - 快照阶段内存只保留文件元索引，文本基线下沉到独立临时目录；使用流式 SHA-256 检测变化，仅对新增、删除或哈希变化的文件加载内容计算 diff。`complete: false` 或 `untrackedPaths` 表示资源限制、读取失败或基线不足，不能当作完整结果。
 - SQLite SessionStore 记录 run 内 checkpoint（模型响应与工具结果边界）；工具结果带稳定幂等键。`SessionManager.recover()` 接管已过期的 interrupted run，随后显式调用 `Session.resume()` 从 checkpoint 继续：已完成工具结果不重放，尚未执行的工具仍经过原审批策略。未调用 `resume()` 不会产生新的副作用。
+- `ModelClient` 支持可选流式事件；OpenAI-compatible adapter 可解析 Chat Completions SSE 文本和工具调用增量。Agent 对网络、超时、限流和服务端错误执行有上限的退避重试，取消、认证、协议和资源错误不会重试。
+- SQLite 使用 append-only `audit_events` 保存模型尝试/重试、工具批次和流式完成等受限审计摘要；审计不保存 API key、认证头、完整模型请求或无限工具输出。
 
 ## 测试与组织
 
