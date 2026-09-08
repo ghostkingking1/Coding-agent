@@ -115,6 +115,7 @@ export class Session {
         sessionId: this.sessionId,
         runId: pending.run.id,
         checkpoint: { save: (checkpoint) => this.store!.saveCheckpoint(checkpoint) },
+        auditSink: { record: (event) => this.store!.record(event) },
         resumeCheckpoint: pending.checkpoint,
       });
       const finishedAt = new Date().toISOString();

@@ -152,7 +152,7 @@ export class Agent {
     const maxBackoff = retry.maxBackoffMs ?? 4_000;
     const started = Date.now();
     for (let attempt = 1; ; attempt += 1) {
-      await this.audit({ sessionId: runOptions.sessionId, runId: runOptions.runId, eventType: "model_attempt", step, attempt });
+      await this.audit({ sessionId: runOptions.sessionId, runId: runOptions.runId, eventType: "model_attempt", step, attempt }, runOptions.auditSink ?? this.options.auditSink);
       try {
         if (this.model.generateStream) return await this.collectStream(request, step, runOptions);
         return await this.model.generate(request);
@@ -162,7 +162,7 @@ export class Agent {
         if (!retryable || attempt >= maxAttempts || Date.now() - started >= totalMs) throw error;
         const delayMs = Math.min(maxBackoff, error.retryAfterMs ?? initial * 2 ** (attempt - 1));
         await this.emit({ type: "model_retry", step, attempt, errorCode: code, delayMs });
-        await this.audit({ sessionId: runOptions.sessionId, runId: runOptions.runId, eventType: "model_retry", step, attempt, errorCode: code, metadata: { delayMs } });
+        await this.audit({ sessionId: runOptions.sessionId, runId: runOptions.runId, eventType: "model_retry", step, attempt, errorCode: code, metadata: { delayMs } }, runOptions.auditSink ?? this.options.auditSink);
         await (retry.sleep ?? defaultSleep)(delayMs, this.options.signal);
       }
     }
@@ -180,7 +180,7 @@ export class Agent {
       else if (event.type === "done") finishReason = event.finishReason;
     }
     const toolCalls = [...calls.entries()].sort(([a], [b]) => a - b).map(([, call]) => ({ id: call.id, name: call.name, input: parseStreamArguments(call.args) }));
-    await this.audit({ sessionId: runOptions.sessionId, runId: runOptions.runId, eventType: "model_finished", step, status: "streamed" });
+    await this.audit({ sessionId: runOptions.sessionId, runId: runOptions.runId, eventType: "model_finished", step, status: "streamed" }, runOptions.auditSink ?? this.options.auditSink);
     return { message: { role: "assistant", content, ...(toolCalls.length ? { toolCalls } : {}) }, finishReason, usage };
   }
 

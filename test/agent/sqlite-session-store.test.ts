@@ -157,6 +157,7 @@ test("recovery resumes from a tool checkpoint without replaying the completed to
     assert.equal(result.finalText, "answer:inspect");
     assert.deepEqual(requests[0], ["user:inspect", "assistant:", "tool:saved output"]);
     assert.equal((await store.listRuns(sessionId))[0]?.status, "completed");
+    assert.deepEqual((await store.listAuditEvents(sessionId, runId)).map((event) => event.eventType), ["run_resumed", "model_attempt", "run_completed"]);
     await store.close();
   });
 });
