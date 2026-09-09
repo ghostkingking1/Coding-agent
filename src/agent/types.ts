@@ -234,6 +234,8 @@ export interface ToolContext {
   readonly sessionId?: string;
   readonly runId?: string;
   readonly toolOutputStore?: import("./tool-output-store.ts").ToolOutputStore;
+  /** 工具可补充自身的受限审计摘要，不能写入完整不可信输出。 */
+  readonly auditSink?: AuditSink;
   /** 当前 Agent 运行的变更记录器，供写入工具在副作用前保存原始内容。 */
   readonly changeTracker?: {
     recordBeforeWrite(absolutePath: string, relativePath: string, originalContent: string): void;

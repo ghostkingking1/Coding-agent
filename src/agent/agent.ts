@@ -252,8 +252,10 @@ export class Agent {
         sessionId: runOptions.sessionId,
         runId: runOptions.runId,
         toolOutputStore: this.toolOutputStore,
+        auditSink: runOptions.auditSink ?? this.options.auditSink,
       });
       await this.emit({ type: "tool_completed", step, toolName: call.name, toolCallId: call.id });
+      await this.audit({ sessionId: runOptions.sessionId, runId: runOptions.runId, eventType: "tool_call", step, toolCallId: call.id, toolName: call.name, status: "completed" }, runOptions.auditSink ?? this.options.auditSink);
       return {
         role: "tool",
         content: await this.serializeToolResult(result, runOptions),
@@ -263,6 +265,7 @@ export class Agent {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       await this.emit({ type: "tool_failed", step, toolName: call.name, toolCallId: call.id, error: message });
+      await this.audit({ sessionId: runOptions.sessionId, runId: runOptions.runId, eventType: "tool_call", step, toolCallId: call.id, toolName: call.name, status: "failed", metadata: { error: message.slice(0, 1024) } }, runOptions.auditSink ?? this.options.auditSink);
       return {
         role: "tool",
         content: JSON.stringify({ error: message }),

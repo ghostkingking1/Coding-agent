@@ -12,6 +12,7 @@ export { createPatchTool } from "./tools/patch-tools.ts";
 export { createRunCommandTool } from "./tools/command-tools.ts";
 export { ProcessSandboxBackend, RustHelperSandboxBackend, UnavailableSandboxBackend, SandboxUnavailableError, executionRequestDigest } from "./tools/sandbox.ts";
 export { createRunTestsTool } from "./tools/test-tools.ts";
+export { McpProtocolError, McpStdioClient, createMcpTools } from "./tools/mcp.ts";
 export { createWorkspaceTools } from "./tools/workspace-tools.ts";
 export { ModelTransportError } from "./model/errors.ts";
 export { FetchHttpTransport } from "./model/transport.ts";
@@ -75,3 +76,4 @@ export type { PatchChange, PatchFileResult, PatchInput, PatchPreview, PatchResul
 export type { RunCommandInput, RunCommandPreview, RunCommandResult, RunCommandToolOptions } from "./tools/command-tools.ts";
 export type { ExecutionRequest, SandboxBackend, SandboxCapabilities, SandboxCapability, SandboxSpawnRequest } from "./tools/sandbox.ts";
 export type { RunTestsInput, RunTestsPreview, RunTestsResult, RunTestsToolOptions } from "./tools/test-tools.ts";
+export type { McpStdioServerConfig, McpToolPreview, McpToolResult } from "./tools/mcp.ts";
