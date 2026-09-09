@@ -105,6 +105,21 @@ test("run diff omits files restored to their original content", async () => {
   });
 });
 
+test("run diff ignores Rust target build artifacts", async () => {
+  await withWorkspace(async (root) => {
+    await fs.mkdir(path.join(root, "target", "debug"), { recursive: true });
+    await fs.writeFile(path.join(root, "target", "debug", "helper.pdb"), "build artifact", "utf8");
+
+    const tracker = new RunChangeTracker({ root });
+    await tracker.start();
+    await fs.writeFile(path.join(root, "target", "debug", "helper.pdb"), "updated artifact", "utf8");
+
+    const result = await tracker.finish();
+    assert.equal(result.text, "");
+    assert.equal(result.complete, true);
+  });
+});
+
 test("run diff truncates the final text without losing per-file records", async () => {
   await withWorkspace(async (root) => {
     const file = path.join(root, "large.ts");

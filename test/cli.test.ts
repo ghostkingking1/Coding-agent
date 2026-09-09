@@ -60,6 +60,19 @@ test("interactive CLI runs one Agent per line and prints run and session diffs",
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
+test("interactive CLI omits the change section when nothing changed", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "coding-agent-repl-"));
+  try {
+    const model: ModelClient = { provider: "fake", model: "fake", capabilities: { toolCalling: false, streaming: false }, async generate(): Promise<ModelResponse> { return { message: { role: "assistant", content: "hello" } }; } };
+    const chunks: string[] = [];
+    const output = new Writable({ write(chunk, _encoding, callback) { chunks.push(String(chunk)); callback(); } });
+    await runInteractiveSession({ session: new Session(new Agent(model)), root, input: Readable.from(["hello\n", "quit\n"]), output });
+
+    assert.match(chunks.join(""), /hello/);
+    assert.doesNotMatch(chunks.join(""), /Changes:/);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
 test("interactive CLI supports TTY prompt and exits on exit", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "coding-agent-repl-"));
   try {

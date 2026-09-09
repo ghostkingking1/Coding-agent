@@ -33,7 +33,7 @@ CODING_AGENT_MODEL=your-tool-capable-cloud-model
 CODING_AGENT_MODEL_API_KEY=your-api-key
 ```
 
-`CODING_AGENT_MODEL_BASE_URL` 必须是服务的 API 根地址，`CODING_AGENT_MODEL` 必须是该服务实际提供的模型名，`CODING_AGENT_MODEL_API_KEY` 用于 Bearer 认证。API key 只写入本机 `.env`，不要提交到 Git。`CODING_AGENT_MODEL_TIMEOUT_MS` 和 `CODING_AGENT_MODEL_MAX_RESPONSE_BYTES` 可选，但必须是正整数。真实模型请求、写入和命令执行都需要交互式确认；非 TTY 环境默认拒绝这些操作。
+`CODING_AGENT_MODEL_BASE_URL` 必须是服务的 API 根地址，`CODING_AGENT_MODEL` 必须是该服务实际提供的模型名，`CODING_AGENT_MODEL_API_KEY` 用于 Bearer 认证。API key 只写入本机 `.env`，不要提交到 Git。`CODING_AGENT_MODEL_TIMEOUT_MS` 和 `CODING_AGENT_MODEL_MAX_RESPONSE_BYTES` 可选，但必须是正整数。完整 `.env` 配置代表对该模型服务的会话级授权；写入和命令执行仍会在交互式终端中请求确认，非 TTY 环境默认拒绝这些副作用。
 
 ## 目录结构
 
@@ -54,6 +54,14 @@ docs/
 ## 文档
 
 - [功能总结](docs/feature-summary.md)：当前已经实现的功能与模块职责。
+- [总链路：用户请求到最终结果](docs/agent-flow-user-request.md)：Agent 主执行闭环、数据流、判断和异常分支。
+- [Session 生命周期链路](docs/agent-flow-session.md)：多轮上下文、run 状态、lease 和恢复。
+- [持久化与审计数据链路](docs/agent-flow-persistence.md)：SQLite 表数据、事务和恢复读取边界。
+- [上下文预算链路](docs/agent-flow-context.md)：模型视图、压缩阶段、摘要和大输出引用。
+- [工具安全与审批链路](docs/agent-flow-security.md)：manifest、capability、WorkspacePolicy、Approval 和 Fail Closed。
+- [模型与网络请求链路](docs/agent-flow-model-network.md)：运行配置、模型审批、transport 和 provider 转换。
+- [命令、测试与 Sandbox 链路](docs/agent-flow-sandbox-command.md)：结构化执行、Rust Helper、超时取消和隔离能力。
+- [Run Diff 与工具输出链路](docs/agent-flow-diff-and-output.md)：工作区快照、unified diff 和 artifact 分页读取。
 - [兼容性记录](docs/compatibility-notes.md)：真实模型验收中观察到的协议兼容性结果。
 - [官方能力差距报告](docs/official-coding-agent-gap-analysis.md)：与 Claude Code、Codex CLI 的详细差距、证据和后续路线。
 - [开发协作规范](AGENTS.md)：分支、测试、安全和提交要求。
@@ -85,3 +93,12 @@ docs/
 - `Agent.run()` 汇总本次运行中由 `apply_patch` 成功写入的文件，结束时返回带文件名和上下文的最终 unified diff。
 - 最终 diff 基于运行前后工作区快照，也能捕获命令或测试脚本产生的新增、修改和删除文件；默认忽略 `.git`、`node_modules` 和隐藏路径。
 - 快照索引只保留路径、类型、大小、修改时间和 SHA-256；文本原始内容保存于带 `sessionId/runId` 的临时 baseline 目录，结束或异常时清理。
+# Rust Sandbox Helper
+
+安全命令执行的 Rust Helper 位于 `sandbox-helper/`。构建 release helper：
+
+```text
+npm run sandbox:build
+```
+
+TypeScript 通过 `RustHelperSandboxBackend` 完成 capability 握手，并把规范化的 `ExecutionRequest` 以 base64 JSON 传给 helper。helper 会重新校验 workspace、cwd、资源限制和 `network: off`，校验失败时拒绝启动目标进程。未声明 `os.isolation` 时，上层要求强隔离会 fail closed。

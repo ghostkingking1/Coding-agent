@@ -6,6 +6,7 @@ import { createRunCommandModelInputSchema } from "./model-tool-schemas.ts";
 import { WorkspacePolicy } from "./security.ts";
 import { argsInputSchema, envInputSchema, singleLineTextSchema } from "./tool-input-schemas.ts";
 import { defineTool } from "./tool-schema.ts";
+import { executionRequestDigest, ProcessSandboxBackend, type ExecutionRequest, type SandboxBackend } from "./sandbox.ts";
 import type { Tool, ToolContext } from "../agent/types.ts";
 
 /** run_command 工具的安全和资源限制配置。 */
@@ -20,6 +21,8 @@ export interface RunCommandToolOptions {
   readonly maxStderrBytes?: number;
   /** 允许透传给子进程的环境变量名称。 */
   readonly allowedEnv?: readonly string[];
+  readonly sandbox?: SandboxBackend;
+  readonly requireOsIsolation?: boolean;
 }
 
 /** run_command 审批预览，不包含环境变量值。 */
@@ -31,6 +34,8 @@ export interface RunCommandPreview {
   readonly maxStdoutBytes: number;
   readonly maxStderrBytes: number;
   readonly envKeys: readonly string[];
+  readonly requestDigest: string;
+  readonly sandbox: { readonly backend: string; readonly version: string; readonly capabilities: readonly string[] };
 }
 
 /** run_command 执行完成后的结构化结果。 */
@@ -55,12 +60,16 @@ interface NormalizedRunCommandOptions {
   readonly maxStdoutBytes: number;
   readonly maxStderrBytes: number;
   readonly allowedEnv: readonly string[];
+  readonly sandbox: SandboxBackend;
+  readonly requireOsIsolation: boolean;
 }
 
 interface PlannedCommand {
   readonly preview: RunCommandPreview;
   readonly cwdPath: string;
   readonly env: NodeJS.ProcessEnv;
+  readonly request: ExecutionRequest;
+  readonly sandbox: SandboxBackend;
 }
 
 interface SpawnPlan {
@@ -133,6 +142,8 @@ function normalizeOptions(options: RunCommandToolOptions): NormalizedRunCommandO
     maxStdoutBytes,
     maxStderrBytes,
     allowedEnv: options.allowedEnv ?? DEFAULT_ALLOWED_ENV,
+    sandbox: options.sandbox ?? new ProcessSandboxBackend(),
+    requireOsIsolation: options.requireOsIsolation ?? false,
   };
 }
 
@@ -144,9 +155,26 @@ function planCommand(policy: WorkspacePolicy, options: NormalizedRunCommandOptio
   }
   const env = buildEnvironment(options.allowedEnv, input.env);
   const envKeys = Object.keys(env).sort((a, b) => a.localeCompare(b));
+  const request: ExecutionRequest = {
+    workspaceRoot: policy.root,
+    executable: input.command,
+    args: input.args,
+    cwd: cwdPath,
+    env: Object.fromEntries(Object.entries(env).filter((entry): entry is [string, string] => entry[1] !== undefined).sort(([a], [b]) => a.localeCompare(b))),
+    timeoutMs,
+    maxStdoutBytes: options.maxStdoutBytes,
+    maxStderrBytes: options.maxStderrBytes,
+    network: "off",
+  };
+  const required = options.requireOsIsolation
+    ? ["process.spawn", "workspace.fs", "network.off", "os.isolation"] as const
+    : ["process.spawn", "workspace.fs", "network.off"] as const;
+  options.sandbox.assertAvailable(required);
   return {
     cwdPath,
     env,
+    request,
+    sandbox: options.sandbox,
     preview: {
       command: input.command,
       args: input.args,
@@ -155,6 +183,8 @@ function planCommand(policy: WorkspacePolicy, options: NormalizedRunCommandOptio
       maxStdoutBytes: options.maxStdoutBytes,
       maxStderrBytes: options.maxStderrBytes,
       envKeys,
+      requestDigest: executionRequestDigest(request),
+      sandbox: options.sandbox.capabilities,
     },
   };
 }
@@ -198,13 +228,11 @@ async function runPlannedCommand(plan: PlannedCommand, context: ToolContext): Pr
   const spawnPlan = planSpawn(plan);
 
   return new Promise<RunCommandResult>((resolve) => {
-    const child = spawn(spawnPlan.command, spawnPlan.args, {
-      cwd: plan.cwdPath,
-      env: plan.env,
-      detached: process.platform !== "win32",
-      shell: false,
+    const child = plan.sandbox.spawn({
+      ...plan.request,
+      executable: spawnPlan.command,
+      args: spawnPlan.args,
       windowsVerbatimArguments: spawnPlan.windowsVerbatimArguments,
-      windowsHide: true,
     });
 
     let stdoutWrites = Promise.resolve();

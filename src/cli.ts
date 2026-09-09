@@ -13,18 +13,17 @@
     ToolRegistry,
     WorkspacePolicy,
     type ApprovalRequest,
-    type ModelApprovalRequest,
     type ModelClient,
     type ModelRequest,
     type ModelResponse,
     type RunEvent,
     type RunDiff,
+    RustHelperSandboxBackend,
   } from "./index.ts";
   import { cleanupStaleBaselineDirectories, RunChangeTracker } from "./agent/run-diff.ts";
   import { Session } from "./agent/session.ts";
   import type { Readable, Writable } from "node:stream";
 
-  /** CLI 只向模型开放可验证的测试入口，不把通用命令执行能力扩展到交互式 Agent。 */
   export const CLI_MODEL_TOOL_NAMES = ["read_file", "list_files", "apply_patch", "run_tests", "search_text"] as const;
 
   /** 让模型把修改和测试作为同一个完成条件，而不是在未验证时直接收尾。 */
@@ -65,11 +64,15 @@
     }
   }
 
-  /** 从工作区工具集中筛选 CLI 的最小工具面，通用 run_command 不会注册给模型。 */
-  export function registerCliTools(registry: ToolRegistry, workspace: WorkspacePolicy): void {
-    for (const tool of createWorkspaceTools(workspace)) {
-      if (tool.name !== "run_command") registry.register(tool);
+  /** 仅在 Rust Helper 证明 OS 隔离和默认禁网后，才向模型注册通用命令工具。 */
+  export function registerCliTools(registry: ToolRegistry, workspace: WorkspacePolicy, helperPath = process.env.CODING_AGENT_SANDBOX_HELPER): void {
+    if (!helperPath) {
+      for (const tool of createWorkspaceTools(workspace)) if (tool.name !== "run_command") registry.register(tool);
+      return;
     }
+    const sandbox = new RustHelperSandboxBackend({ helperPath });
+    sandbox.assertAvailable(["process.spawn", "workspace.fs", "network.off", "os.isolation"]);
+    for (const tool of createWorkspaceTools(workspace, { sandbox, requireOsIsolation: true })) registry.register(tool);
   }
 
   class EchoModel implements ModelClient {
@@ -104,7 +107,7 @@
     if (!config) {
       const result = await new Agent(new EchoModel(), new ToolRegistry(), {
         systemPrompt: createCodingSystemPrompt(process.cwd()),
-        onEvent: (event) => console.error(formatRunEvent(event)),
+        onEvent: writeRunEvent,
         changeTracker: new RunChangeTracker({ root: workspace.root }),
       }).run(input);
       console.log(result.finalText);
@@ -114,8 +117,9 @@
 
     const prompt = createTerminalPrompt();
     try {
+      // 模型服务由本机 .env 显式配置，CLI 将其视为会话级授权，不逐次打断用户。
       const model = createConfiguredModelClient(config, {
-        approval: new DefaultModelApprovalPolicy((request) => prompt.confirmModel(request)),
+        approval: new DefaultModelApprovalPolicy(() => true),
       });
       const registry = new ToolRegistry(new SecurityPolicy({
         approval: new DefaultApprovalPolicy((request) => prompt.confirmTool(request)),
@@ -124,7 +128,7 @@
 
       const result = await new Agent(model, registry, {
         systemPrompt: createCodingSystemPrompt(workspace.root),
-        onEvent: (event) => console.error(formatRunEvent(event)),
+        onEvent: writeRunEvent,
         changeTracker: new RunChangeTracker({ root: workspace.root }),
       }).run(input);
       console.log(result.finalText);
@@ -135,7 +139,7 @@
   }
 
   /** 无参数时启动持续对话；每行输入独立运行一次 Agent，并保留 Session 上下文。 */
-  export async function runInteractiveSession(options: { readonly session: Session; readonly root: string; readonly input?: Readable; readonly output?: Writable; readonly errorOutput?: Writable }): Promise<void> {
+  export async function runInteractiveSession(options: { readonly session: Session; readonly root: string; readonly input?: Readable; readonly output?: Writable; readonly errorOutput?: Writable; readonly readline?: ReturnType<typeof createInterface> }): Promise<void> {
     const input = options.input ?? stdin;
     const output = options.output ?? stdout;
     const errorOutput = options.errorOutput ?? process.stderr;
@@ -144,7 +148,8 @@
     // 单轮 tracker 跨 REPL 输入复用，因此每次 finish 都以此前 checkpoint 为基准。
     let runTracker = new RunChangeTracker({ root: options.root, sessionId: options.session.sessionId, reuseBaseline: true });
     await sessionTracker.start();
-    const readline = createInterface({ input, output, terminal: Boolean((input as NodeJS.ReadStream).isTTY && (output as NodeJS.WriteStream).isTTY) });
+    const ownsReadline = options.readline === undefined;
+    const readline = options.readline ?? createInterface({ input, output, terminal: Boolean((input as NodeJS.ReadStream).isTTY && (output as NodeJS.WriteStream).isTTY) });
     try {
       if (readline.terminal) output.write("coding-agent> ");
       for await (const raw of readline) {
@@ -156,7 +161,8 @@
           output.write(`${result.finalText}\n`);
           printRunDiff(result.diff, output, errorOutput);
         } catch (error) {
-          errorOutput.write(`[agent] run failed: ${error instanceof Error ? error.message : String(error)}\n`);
+          // Agent 已通过 run_failed 事件输出模型或工具错误，避免在 REPL 中重复同一错误文本。
+          errorOutput.write("[agent] request stopped; you can submit another request.\n");
           // 失败 run 的工作区状态不适合作为下一轮 checkpoint，重新建立基线。
           await runTracker.dispose();
           runTracker = new RunChangeTracker({ root: options.root, sessionId: options.session.sessionId, reuseBaseline: true });
@@ -164,12 +170,12 @@
         if (readline.terminal) output.write("coding-agent> ");
       }
     } finally {
-      readline.close();
+      if (ownsReadline) readline.close();
       await options.session.close();
       await runTracker.dispose();
       const diff = await sessionTracker.finish();
       if (diff.text) output.write(`\nSession changes:\n${diff.text}\n`);
-      if (!diff.complete) errorOutput.write(`[agent] warning: session snapshot incomplete; omitted paths: ${diff.omittedPaths.join(", ") || "unknown"}\n`);
+      if (!diff.complete) errorOutput.write(formatSnapshotWarning("session", diff));
     }
   }
 
@@ -182,37 +188,34 @@
     const config = readModelRuntimeConfig(process.env);
     const workspace = new WorkspacePolicy({ root: process.cwd() });
     if (!config) {
-      await runInteractiveSession({ session: new Session(new Agent(new EchoModel(), new ToolRegistry(), { systemPrompt: createCodingSystemPrompt(workspace.root), onEvent: (event) => console.error(formatRunEvent(event)) })), root: workspace.root });
+      await runInteractiveSession({ session: new Session(new Agent(new EchoModel(), new ToolRegistry(), { systemPrompt: createCodingSystemPrompt(workspace.root), onEvent: writeRunEvent })), root: workspace.root });
       return;
     }
-    const prompt = createTerminalPrompt();
+    // REPL 和审批问题共享一个 readline，避免两个终端监听器重复回显输入。
+    const readline = createInterface({ input: stdin, output: stdout });
+    const prompt = createTerminalPrompt(readline);
     try {
-      const model = createConfiguredModelClient(config, { approval: new DefaultModelApprovalPolicy((request) => prompt.confirmModel(request)) });
+      // 模型服务由本机 .env 显式配置，CLI 将其视为会话级授权，不逐次打断用户。
+      const model = createConfiguredModelClient(config, { approval: new DefaultModelApprovalPolicy(() => true) });
       const registry = new ToolRegistry(new SecurityPolicy({ approval: new DefaultApprovalPolicy((request) => prompt.confirmTool(request)) }));
       registerCliTools(registry, workspace);
-      await runInteractiveSession({ session: new Session(new Agent(model, registry, { systemPrompt: createCodingSystemPrompt(workspace.root), onEvent: (event) => console.error(formatRunEvent(event)) })), root: workspace.root });
+      await runInteractiveSession({ session: new Session(new Agent(model, registry, { systemPrompt: createCodingSystemPrompt(workspace.root), onEvent: writeRunEvent })), root: workspace.root, readline });
     } finally { prompt.close(); }
   }
 
   /** CLI 必须在交互式终端中获得明确输入；非交互运行默认拒绝所有副作用。 */
-  function createTerminalPrompt(): {
-    confirmModel(request: ModelApprovalRequest): Promise<boolean>;
+  function createTerminalPrompt(existingReadline?: ReturnType<typeof createInterface>): {
     confirmTool(request: ApprovalRequest): Promise<boolean>;
     close(): void;
   } {
     if (!stdin.isTTY || !stdout.isTTY) {
       return {
-        confirmModel: async () => false,
         confirmTool: async () => false,
         close: () => undefined,
       };
     }
-    const readline = createInterface({ input: stdin, output: stdout });
+    const readline = existingReadline ?? createInterface({ input: stdin, output: stdout });
     return {
-      async confirmModel(request) {
-        const tools = request.toolNames.length > 0 ? request.toolNames.join(", ") : "none";
-        return confirm(readline, `Send ${request.messageCount} messages (${request.roles.join(", ")}) and tool context (${tools}) to ${request.provider}/${request.model} at ${request.endpointOrigin}?`);
-      },
       async confirmTool(request) {
         const preview = request.preview === undefined ? "no preview" : truncate(JSON.stringify(request.preview));
         return confirm(readline, `Run ${request.toolName} with capabilities [${request.capabilities.join(", ")}]? Preview: ${preview}`);
@@ -232,9 +235,22 @@
 
   function printRunDiff(diff: RunDiff | undefined, output: Writable = stdout, errorOutput: Writable = process.stderr): void {
     if (!diff) return;
-    output.write(`\nChanges:\n${diff.text || "(none)"}\n`);
-    if (!diff.complete) errorOutput.write(`[agent] warning: change snapshot incomplete; omitted paths: ${diff.omittedPaths.join(", ") || "unknown"}\n`);
+    if (diff.text) output.write(`\nChanges:\n${diff.text}\n`);
+    if (!diff.complete) errorOutput.write(formatSnapshotWarning("change", diff));
     if (diff.untrackedPaths.length > 0) errorOutput.write(`[agent] warning: changes could not be diffed: ${diff.untrackedPaths.join(", ")}\n`);
+  }
+
+  function writeRunEvent(event: RunEvent): void {
+    if (event.type === "model_delta") {
+      process.stdout.write(event.text);
+      return;
+    }
+    process.stderr.write(`${formatRunEvent(event)}\n`);
+  }
+
+  function formatSnapshotWarning(scope: "session" | "change", diff: RunDiff): string {
+    const paths = [...new Set([...diff.omittedPaths, ...diff.untrackedPaths])].sort();
+    return `[agent] warning: ${scope} snapshot incomplete; affected paths: ${paths.join(", ") || "unknown"}\n`;
   }
 
   if (isMainModule()) {

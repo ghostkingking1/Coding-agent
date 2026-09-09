@@ -59,4 +59,4 @@
 
 ## 当前边界
 
-当前实现适合在明确审批和受控工作区中进行实验性验证。OS 级 sandbox、Anthropic 和 OpenAI Responses adapter、外部工具协议及 skills 仍属于后续工作，详见[官方能力差距报告](official-coding-agent-gap-analysis.md)。
+当前实现适合在明确审批和受控工作区中进行实验性验证。OS 级 sandbox、Anthropic 和 OpenAI Responses adapter、外部工具协议及 skills 仍属于后续工作；命令沙箱的 MVP 到 V4 计划见 [Sandbox 路线图](sandbox-roadmap.md)，历史能力差距分析见[官方能力差距报告](official-coding-agent-gap-analysis.md)。

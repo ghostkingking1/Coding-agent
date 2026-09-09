@@ -5,3 +5,4 @@ dist/
 .env
 .env.*
 !.env.example
+sandbox-helper/target/

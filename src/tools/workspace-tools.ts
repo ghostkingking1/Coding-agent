@@ -9,6 +9,7 @@ import type { Tool } from "../agent/types.ts";
 import { createPatchTool } from "./patch-tools.ts";
 import { createRunCommandTool } from "./command-tools.ts";
 import { createRunTestsTool } from "./test-tools.ts";
+import type { RunCommandToolOptions } from "./command-tools.ts";
 
 const readFileInputSchema = z.object({ path: pathInputSchema }).strict();
 const listFilesInputSchema = z.preprocess((value) => value ?? {}, z.object({
@@ -22,7 +23,7 @@ const searchTextInputSchema = z.object({
 }).strict();
 
 /** 创建一组受 WorkspacePolicy 约束的文件读取、搜索、patch 和命令执行工具。 */
-export function createWorkspaceTools(policy: WorkspacePolicy): readonly Tool[] {
+export function createWorkspaceTools(policy: WorkspacePolicy, commandOptions: RunCommandToolOptions = {}): readonly Tool[] {
   return [
     defineTool({
       name: "read_file",
@@ -66,8 +67,8 @@ export function createWorkspaceTools(policy: WorkspacePolicy): readonly Tool[] {
       },
     }),
     createPatchTool(policy),
-    createRunCommandTool(policy),
-    createRunTestsTool(policy),
+    createRunCommandTool(policy, commandOptions),
+    createRunTestsTool(policy, commandOptions),
     defineTool({
       name: "search_text",
       description: "Search for a literal string in UTF-8 text files inside the workspace.",

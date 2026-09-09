@@ -10,6 +10,7 @@ export { ApprovalDeniedError, DefaultApprovalPolicy, SecurityPolicy, WorkspacePo
 export { defineTool, ToolInputValidationError, validateToolInput } from "./tools/tool-schema.ts";
 export { createPatchTool } from "./tools/patch-tools.ts";
 export { createRunCommandTool } from "./tools/command-tools.ts";
+export { ProcessSandboxBackend, RustHelperSandboxBackend, UnavailableSandboxBackend, SandboxUnavailableError, executionRequestDigest } from "./tools/sandbox.ts";
 export { createRunTestsTool } from "./tools/test-tools.ts";
 export { createWorkspaceTools } from "./tools/workspace-tools.ts";
 export { ModelTransportError } from "./model/errors.ts";
@@ -72,4 +73,5 @@ export type { ModelApprovalPolicy, ModelApprovalRequest } from "./model/approval
 export type { ModelRuntimeConfig, ModelRuntimeOptions, OpenAICompatibleRuntimeConfig } from "./model/runtime-config.ts";
 export type { PatchChange, PatchFileResult, PatchInput, PatchPreview, PatchResult } from "./tools/patch-tools.ts";
 export type { RunCommandInput, RunCommandPreview, RunCommandResult, RunCommandToolOptions } from "./tools/command-tools.ts";
+export type { ExecutionRequest, SandboxBackend, SandboxCapabilities, SandboxCapability, SandboxSpawnRequest } from "./tools/sandbox.ts";
 export type { RunTestsInput, RunTestsPreview, RunTestsResult, RunTestsToolOptions } from "./tools/test-tools.ts";

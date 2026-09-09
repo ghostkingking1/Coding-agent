@@ -9,7 +9,7 @@ const DEFAULT_MAX_DIFF_CHARS = 64 * 1024;
 const DEFAULT_MAX_FILE_BYTES = 1024 * 1024;
 const DEFAULT_MAX_FILES = 5000;
 const DEFAULT_MAX_SNAPSHOT_BYTES = 64 * 1024 * 1024;
-const DEFAULT_IGNORED_DIRECTORIES = [".git", "node_modules"] as const;
+const DEFAULT_IGNORED_DIRECTORIES = [".git", "node_modules", "target"] as const;
 const BASELINE_DIRECTORY_PREFIX = "coding-agent-baseline-";
 const DEFAULT_STALE_BASELINE_AGE_MS = 24 * 60 * 60 * 1000;
 

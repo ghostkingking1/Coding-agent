@@ -43,7 +43,7 @@ export interface OpenAICompatibleModelOptions {
 export class OpenAICompatibleModel implements ModelClient {
   readonly provider = "openai-compatible";
   readonly model: string;
-  readonly capabilities = { toolCalling: true, streaming: false } as const;
+  readonly capabilities = { toolCalling: true, streaming: true } as const;
   private readonly endpoint: URL;
   private readonly apiKey?: string;
   private readonly transport: HttpTransport;
