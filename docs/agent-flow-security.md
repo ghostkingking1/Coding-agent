@@ -26,7 +26,7 @@ Tool Call
 | SecurityPolicy | **已实现** | manifest、capability、预览和审批 | `src/tools/security.ts:authorize()` |
 | WorkspacePolicy | **已实现** | realpath、边界、隐藏路径和资源限制 | `src/tools/security.ts:WorkspacePolicy` |
 | ApprovalPolicy | **已实现** | 只读自动允许，副作用默认拒绝 | `DefaultApprovalPolicy` |
-| OS Sandbox | **部分实现** | SandboxBackend 和 helper 控制面已存在 | `src/tools/sandbox.ts` |
+| OS Sandbox | **部分实现** | Rust Helper 按平台探测并启用 namespace/AppContainer、资源限制和 Fail Closed | `src/tools/sandbox.ts`、`sandbox-helper/src/main.rs` |
 
 ## 4. 数据流
 
@@ -54,7 +54,7 @@ Sandbox 不可用          -> SandboxUnavailableError -> 不启动宿主进程
 
 ## 7. 持久化 / 审计
 
-Approval 请求包含工具名、capability、解析后的 input 和 preview。当前这些请求通过回调提供，未形成独立审计表；工具结果进入 Agent transcript，Session 成功时随消息持久化。
+Approval 请求包含工具名、capability、解析后的 input 和 preview；运行、模型尝试、工具批次和 sandbox 执行摘要可写入 SQLite `audit_events`。完整请求、认证信息和无限工具输出不进入审计；工具结果进入 Agent transcript，Session 成功时随消息持久化。
 
 ## 8. 安全边界
 
@@ -62,7 +62,7 @@ Approval 请求包含工具名、capability、解析后的 input 和 preview。�
 - 默认隐藏路径不可见，拒绝 workspace 外路径和 symlink escape。
 - 命令 cwd、环境变量、超时、输出和子进程树均有限制。
 - Sandbox 的 `Unavailable` 和 capability 缺失必须拒绝，不能静默降级。
-- 应用层 cwd/realpath 约束不等于 OS 级隔离。
+- 应用层 cwd/realpath 约束不等于 OS 级隔离；OS 隔离能力缺失时必须 Fail Closed。
 
 ## 9. 设计原因
 
@@ -70,7 +70,7 @@ Approval 请求包含工具名、capability、解析后的 input 和 preview。�
 
 ## 10. 当前边界
 
-**已实现**应用层路径策略、Approval、输入校验和 Sandbox 控制面；**部分实现**Rust helper/OS 隔离按平台能力启用；**后续计划**是风险分级、网络 capability 和纵深隔离。
+**已实现**应用层路径策略、Approval、输入校验、资源限制、审计和 Rust Helper 控制面；**部分实现**Linux namespace/seccomp/cgroup 与 Windows AppContainer/Restricted Token/Job Object，能力按平台探测启用；**后续计划**是精细网络策略、设备/注册表限制、风险分级和容器/VM 后端。
 
 ## 11. 相关测试
 

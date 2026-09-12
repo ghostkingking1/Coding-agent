@@ -70,6 +70,14 @@ docs/
 
 ## 功能更新日志
 
+### 2026-09-12
+
+- 增加 OpenAI Responses 协议、流式增量解析和显式协议配置。
+- 增加本地 MCP stdio 工具发现/调用，并复用 Sandbox、Capability、Approval 和输出限制。
+- 增加仓库 `AGENTS.md` 指令加载、Git 只读上下文和 Agent/User 变更区分。
+- 增加 Rust Helper 的平台隔离、资源限制、执行审计和 Fail Closed 能力说明。
+- 文档同步当前已完成能力、未完成边界和下一阶段任务状态机计划。
+
 ### 2026-09-08
 
 - 增加 Session SQLite 持久化、run lease 和工作区匹配校验；已完成 run 可恢复上下文，过期的中断 run 可显式接管。

@@ -76,7 +76,7 @@ Helper 崩溃 -> 当前执行失败 -> 清理/恢复流程
 
 ## 10. 当前边界
 
-**已实现**结构化命令/测试、网络关闭、超时取消、执行审计、Helper 侧资源限制和 Fail Closed 控制面；**已实现基础隔离**Rust Helper 的 Windows AppContainer/ACL/Job Object 与 Linux namespace/`no_new_privs`；**后续计划**是 Linux seccomp/cgroup、Windows 设备/凭据加固、网络 capability 和容器/VM 后端。
+**已实现**结构化命令/测试、网络关闭、超时取消、执行审计、Helper 侧资源限制和 Fail Closed 控制面；**已实现基础隔离**Rust Helper 的 Windows AppContainer/ACL/Job Object 与 Linux namespace/`no_new_privs`/seccomp/cgroup 探测；**后续计划**是精细 `/proc`/设备限制、Windows 网络/注册表策略、网络 capability 和容器/VM 后端。
 
 ## 11. 相关测试
 

@@ -1,6 +1,6 @@
 # 功能总结
 
-截至 2026-08-29，项目已经形成一个可测试的基础 coding agent 闭环：
+截至 2026-09-12，项目已经形成一个带持久化、恢复、受限沙箱和外部工具边界的 coding agent 闭环：
 
 ```text
 用户请求 -> Agent 调用模型 -> 模型请求工具 -> 工具校验与审批
@@ -14,6 +14,9 @@
 - 支持模型连续返回工具调用，并将工具结果回传到下一轮模型请求。
 - 支持 `AbortSignal` 取消模型和工具执行。
 - 支持模型开始、工具请求、工具完成、工具失败和运行结束事件。
+- 支持流式文本/工具增量事件、模型错误分类和有限重试退避。
+- 支持显式并行工具批次、冲突键串行化和声明顺序回传。
+- 支持上下文预算、历史摘要、工具输出 artifact 分页和 run checkpoint。
 
 ## 工作区工具
 
@@ -23,6 +26,15 @@
 - `apply_patch`：对已有文本进行精确替换，先生成受限 diff 预览，再审批和写入。
 - `run_command`：在工作区内以 argv 形式执行命令，具备 cwd、超时、环境变量、stdout/stderr 和子进程树限制。
 - `run_tests`：封装受限的 npm 测试命令，返回结构化状态、退出码、输出和耗时。
+- `read_tool_output`：按 session/run 隔离读取超出模型预览上限的工具输出。
+- MCP stdio：宿主配置服务器，经过 OS sandbox、能力声明和审批后发现/调用工具。
+
+## 仓库上下文
+
+- 从 workspace 根到当前目录加载祖先链 `AGENTS.md`，按文件和总字符数限制，并记录 digest 与截断状态。
+- 仓库指令标记为不可信内容，不能扩大权限、触发命令或绕过审批。
+- `get_repository_instructions`、`get_git_status`、`get_git_file_diff` 提供只读仓库上下文。
+- `GitChangeTracker` 区分运行前已有改动与 Agent 本次产生的改动。
 
 ## 工具安全
 
@@ -37,6 +49,7 @@
 
 - `ModelClient` 提供供应商无关的模型契约。
 - `OpenAICompatibleModel` 支持 Chat Completions 风格的文本和函数工具调用转换。
+- `OpenAIResponsesModel` 支持显式 Responses 协议、函数调用延续、SSE 文本/工具增量和 `previous_response_id` 字段。
 - `FetchHttpTransport` 统一处理超时、取消、响应大小、HTTP 错误、网络错误和 JSON 解析。
 - `ApprovedModelClient` 确保每次可能上传对话或工具结果的模型请求先经过审批。
 - 通过 `.env` 显式配置 provider、base URL、模型和可选 API key。
@@ -59,4 +72,4 @@
 
 ## 当前边界
 
-当前实现适合在明确审批和受控工作区中进行实验性验证。OS 级 sandbox、Anthropic 和 OpenAI Responses adapter、外部工具协议及 skills 仍属于后续工作；命令沙箱的 MVP 到 V4 计划见 [Sandbox 路线图](sandbox-roadmap.md)，历史能力差距分析见[官方能力差距报告](official-coding-agent-gap-analysis.md)。
+当前实现适合在明确审批、受控工作区和已探测到隔离能力的平台中进行实验性验证。Anthropic adapter、skills、精细网络策略、Linux `/proc`/设备收紧、Windows 注册表/网络过滤和容器/VM 后端仍未完成；命令沙箱计划见 [Sandbox 路线图](sandbox-roadmap.md)，整体计划见[核心 Agent 能力路线图](core-agent-roadmap.md)。

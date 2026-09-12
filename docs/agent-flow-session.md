@@ -59,11 +59,11 @@ Agent 失败/取消 -> failRun(status=failed) -> 保留失败历史 -> context �
 显式 recover   -> 中断过期 run -> 重新 load 已提交上下文
 ```
 
-当前没有自动重放未完成工具调用，也没有任务级 checkpoint；这是为了避免恢复时重复写文件或重复执行命令。
+恢复会从 run checkpoint 读取已完成工具结果，避免重复写文件或重复执行命令；尚未执行的工具仍需经过原审批策略。任务级状态机和强制验证闭环尚未实现。
 
 ## 7. 持久化 / 审计
 
-Session 通过 `startRun`、`completeRun`、`failRun` 记录生命周期。成功提交包含新增消息；失败只记录状态和错误。`ownerId`、`leaseUntil` 和 heartbeat 让其他进程判断运行是否仍被占用。
+Session 通过 `startRun`、`completeRun`、`failRun` 记录生命周期；checkpoint 保存模型/工具边界和幂等结果；`audit_events` 保存受限运行事件。成功提交包含新增消息；失败只记录状态和错误。`ownerId`、`leaseUntil` 和 heartbeat 让其他进程判断运行是否仍被占用。
 
 ## 8. 安全边界
 
@@ -78,7 +78,7 @@ Session 将 Agent 的一次性执行与多轮产品体验分离；成功消息�
 
 ## 10. 当前边界
 
-**已实现**多轮上下文、持久状态和过期恢复；**部分实现** checkpoint；**后续计划**是增加幂等工具调用、显式恢复点和更完整的运行审计。
+**已实现**多轮上下文、持久状态、checkpoint、幂等工具结果、过期恢复和运行审计；**部分实现**恢复 CLI/API 和审计查询；**后续计划**是任务级状态机、强制验证和跨设备恢复。
 
 ## 11. 相关测试
 

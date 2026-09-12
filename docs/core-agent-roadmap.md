@@ -1,22 +1,22 @@
 # Core Agent 能力路线图
 
-本文定义 Sandbox V2 之后，项目达到 Codex 级核心 coding agent 所需的开发顺序。每个阶段都是独立的可交付功能块；未满足前置阶段的能力不得提前开放。
+本文定义项目达到核心 coding agent 能力所需的开发顺序。每个阶段都是独立的可交付功能块；未满足前置阶段的能力不得提前开放。状态以代码、测试和平台探测结果为准。
 
 ## 总体顺序
 
 ```text
-Sandbox V2
-  -> OpenAI Responses
-  -> 本地 MCP tools
-  -> 仓库指令加载与 Git 感知
-  -> 任务状态机与强制验证闭环
+Sandbox V2（基础能力已落地）
+  -> OpenAI Responses（已完成）
+  -> 本地 MCP tools（已完成）
+  -> 仓库指令加载与 Git 感知（已完成）
+  -> 任务状态机与强制验证闭环（下一阶段）
   -> 持久任务恢复 CLI/API
   -> Skills
 ```
 
 上下文预算、摘要、SQLite 审计、checkpoint 和 Session 基础已经存在，本路线只补它们在真实任务中的产品化使用，不重复建设。
 
-## 阶段一：Sandbox V2
+## 阶段一：Sandbox V2（基础能力已完成，纵深能力进行中）
 
 ### 目标
 
@@ -30,11 +30,15 @@ Sandbox V2
 - 将 CPU、内存、PID 数、句柄数、磁盘和输出上限纳入 `ExecutionRequest` 与 Capability。
 - 命令、测试和未来 MCP Server 的启动都只能经由同一个 `SandboxBackend`。
 
+### 当前状态
+
+Rust Helper 已具备 Linux namespace、`no_new_privs`、seccomp/cgroup 探测和 Windows AppContainer、Restricted Token、Job Object、句柄白名单等基础能力；能力不足时 Fail Closed。精细 `/proc`/设备限制、Windows 独立网络/注册表策略和 ACL 崩溃恢复仍未完成。
+
 ### 完成定义
 
 隔离能力缺失时不注册工具；任何普通 subprocess 降级路径都必须被拒绝。
 
-## 阶段二：OpenAI Responses
+## 阶段二：OpenAI Responses（已完成）
 
 ### 目标
 
@@ -52,7 +56,7 @@ Sandbox V2
 
 同一 Agent 更换模型协议后，工具调用、上下文压缩、checkpoint、审批和审计结果保持一致。
 
-## 阶段三：本地 MCP Tools
+## 阶段三：本地 MCP Tools（已完成）
 
 ### 目标
 
@@ -100,7 +104,7 @@ Agent 在修改前能说明仓库规则和 Git 状态，结束时能准确报告
 
 实现位置：`src/repository/instructions.ts`、`src/repository/git.ts`、`src/repository/tools.ts`。CLI 注入受限 `AGENTS.md` 上下文并注册只读仓库工具；Git 查询固定使用无 shell 的只读 argv，运行结果交叉标记用户已有修改、Agent 修改和重叠文件。
 
-## 阶段五：任务状态机与强制验证闭环
+## 阶段五：任务状态机与强制验证闭环（下一步，P0）
 
 ### 目标
 
@@ -129,6 +133,14 @@ created -> analyzing -> planning -> executing -> validating
 ### 完成定义
 
 每个任务都能回答：改了什么、如何验证、未验证时为什么。
+
+### 首批交付顺序
+
+1. 定义 `Task`、状态转换和 SQLite 表，禁止非法跳转。
+2. 将 Agent run、Git 基线、审批和验证结果关联到 Task。
+3. 变更后自动进入 `validating`，先接入 `npx tsc --noEmit`、`npm test` 和 `git diff --check`。
+4. 验证失败进入 `repairing`，仅把结构化错误摘要回传模型；验证通过才允许 `completed`。
+5. 补充“未验证完成”的显式豁免与审计测试，再开放 CLI 展示。
 
 ## 阶段六：持久任务恢复 CLI/API
 
@@ -186,6 +198,18 @@ codex/skills-foundation
 ```
 
 每个分支只处理一个阶段。MCP Server 启动必须等待 Sandbox V2；Skills 必须等待 MCP、仓库上下文和任务状态机稳定后再开发。
+
+## 当前下一步计划
+
+| 优先级 | 交付 | 主要验收 |
+| --- | --- | --- |
+| P0 | Task 状态机与强制验证闭环 | 非法状态拒绝；变更后必须验证；失败可修复并留证据 |
+| P1 | 任务恢复 CLI/API | 列出、查看、取消、恢复；重新校验 workspace、Git 基线、Helper 和 MCP 身份 |
+| P1 | Sandbox 纵深补强 | Linux `/proc`/设备和 Windows 网络/注册表策略有真实逃逸回归 |
+| P2 | Skills 基础 | manifest、版本、来源、依赖和 Capability/Approval 继承 |
+| P2 | 多 provider 与网络策略 | Anthropic adapter；联网 Capability 具备域名/IP/端口绑定和独立审批 |
+
+每个阶段交付前必须通过 `npm test`、`npx tsc --noEmit`、`git diff --check`、Rust 测试以及对应平台安全回归；未通过的能力不得写入“已完成”。
 
 ## 核心完成标准
 
