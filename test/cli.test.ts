@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { CLI_MODEL_TOOL_NAMES, createCodingSystemPrompt, formatRunEvent, isInteractiveTerminal, registerCliTools, runInteractiveSession } from "../src/cli.ts";
+import { CLI_MODEL_TOOL_NAMES, createCodingSystemPrompt, formatRunDiffSummary, formatRunEvent, isInteractiveTerminal, registerCliTools, runInteractiveSession } from "../src/cli.ts";
 import { Agent } from "../src/agent/agent.ts";
 import { Session } from "../src/agent/session.ts";
 import { Readable, Writable } from "node:stream";
@@ -83,8 +83,28 @@ test("interactive CLI supports TTY prompt and exits on exit", async () => {
     const output = new Writable({ write(chunk, _encoding, callback) { outputChunks.push(String(chunk)); callback(); } }) as Writable & { isTTY?: boolean };
     Object.defineProperty(output, "isTTY", { value: true });
     await runInteractiveSession({ session: new Session(new Agent(model, undefined, { includeRunDiff: false })), root, input, output });
-    assert.match(outputChunks.join(""), /coding-agent> /);
+    assert.match(outputChunks.join(""), /veil> /);
   } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test("CLI formats compact file change summaries without emitting the full diff", async () => {
+  const summary = formatRunDiffSummary({
+    sessionId: "session",
+    runId: "run",
+    files: [
+      { path: "src/app.ts", diff: "--- a/src/app.ts\n+++ b/src/app.ts\n-old\n+new\n", addedLines: 1, removedLines: 1 },
+      { path: "test/new.ts", diff: "+new\n", addedLines: 1, removedLines: 0 },
+    ],
+    text: "full diff should not be displayed",
+    truncated: false,
+    complete: true,
+    omittedPaths: [],
+    untrackedPaths: [],
+  });
+  assert.match(summary, /Changes: 2 file\(s\) changed, \+2 -1/);
+  assert.match(summary, /M src\/app\.ts \+1 -1/);
+  assert.match(summary, /A test\/new\.ts \+1 -0/);
+  assert.doesNotMatch(summary, /full diff/);
 });
 
 test("CLI rejects non-TTY interactive mode", () => {

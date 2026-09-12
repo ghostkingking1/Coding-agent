@@ -13,7 +13,12 @@ const DEFAULT_IGNORED_DIRECTORIES = [".git", "node_modules", "target"] as const;
 const BASELINE_DIRECTORY_PREFIX = "coding-agent-baseline-";
 const DEFAULT_STALE_BASELINE_AGE_MS = 24 * 60 * 60 * 1000;
 
-export interface RunDiffFile { readonly path: string; readonly diff: string; }
+export interface RunDiffFile {
+  readonly path: string;
+  readonly diff: string;
+  readonly addedLines?: number;
+  readonly removedLines?: number;
+}
 export interface RunDiff {
   readonly sessionId: string;
   readonly runId: string;
@@ -173,7 +178,7 @@ export class RunChangeTracker {
       const newFile = after.files.get(relativePath);
       if (oldFile?.fileType === "untracked" || newFile?.fileType === "untracked") continue;
       if (sameMetadata(oldFile, newFile)) continue;
-      files.push({ path: relativePath, diff: await renderDiff(relativePath, oldFile, newFile, this.root!, this.contextLines) });
+      files.push(createDiffFile(relativePath, await renderDiff(relativePath, oldFile, newFile, this.root!, this.contextLines)));
     }
     if (this.reuseBaseline) await this.promoteBaseline(after, before);
     return buildResult(this.sessionId, this.runId, files, this.maxDiffChars, before.complete && after.complete, unique([...before.omittedPaths, ...after.omittedPaths]), unique([...before.untrackedPaths, ...after.untrackedPaths]));
@@ -183,7 +188,7 @@ export class RunChangeTracker {
     const files: RunDiffFile[] = [];
     for (const tracked of this.fallbackFiles.values()) {
       const finalContent = await fs.readFile(tracked.absolutePath, "utf8");
-      if (tracked.originalContent !== finalContent) files.push({ path: tracked.relativePath, diff: createTextDiff(tracked.relativePath, tracked.originalContent, finalContent, this.contextLines) });
+      if (tracked.originalContent !== finalContent) files.push(createDiffFile(tracked.relativePath, createTextDiff(tracked.relativePath, tracked.originalContent, finalContent, this.contextLines)));
     }
     return buildResult(this.sessionId, this.runId, files, this.maxDiffChars, true, [], []);
   }
@@ -316,6 +321,17 @@ function buildResult(sessionId: string, runId: string, files: readonly RunDiffFi
   const rawText = files.map((file) => file.diff).join("\n");
   const truncated = rawText.length > maxChars;
   return { sessionId, runId, files, text: truncated ? `${rawText.slice(0, maxChars)}\n... run diff truncated ...` : rawText, truncated, complete, omittedPaths, untrackedPaths };
+}
+
+function createDiffFile(relative: string, diff: string): RunDiffFile {
+  let addedLines = 0;
+  let removedLines = 0;
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("+++") || line.startsWith("---")) continue;
+    if (line.startsWith("+")) addedLines += 1;
+    else if (line.startsWith("-")) removedLines += 1;
+  }
+  return { path: relative, diff, addedLines, removedLines };
 }
 
 function normalize(content: string): string { return content.replace(/\r\n/g, "\n"); }

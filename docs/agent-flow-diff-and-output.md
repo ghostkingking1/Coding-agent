@@ -11,7 +11,7 @@ run 开始 -> RunChangeTracker 建立 baseline
 工具/命令修改工作区
 工具产生大输出 -> ToolOutputStore 保存 artifact
 run 结束 -> 再次快照 -> hash 比较 -> 生成 unified diff
-模型需要详情 -> read_tool_output 分页读取
+模型需要详情 -> read_tool_output 分页读取；CLI 仅显示文件变更统计
 ```
 
 ## 3. 核心模块
@@ -50,7 +50,7 @@ artifact 不存在/参数非法 -> read_tool_output 失败
 
 ## 7. 持久化 / 审计
 
-`RunDiff` 可随 `AgentResult` 写入 `runs.result_json`；Session 多轮使用 reusable baseline，每轮 finish 后 promote 当前基线。临时 baseline 和 tool artifact 不属于 SQLite 核心表，生命周期结束后清理。
+`RunDiff` 可随 `AgentResult` 写入 `runs.result_json`；Session 多轮使用 reusable baseline，每轮 finish 后 promote 当前基线。CLI 只渲染 `RunDiff.files` 的文件数和增删行数，完整 `text` 仍保留在结果中。临时 baseline 和 tool artifact 不属于 SQLite 核心表，生命周期结束后清理。
 
 ## 8. 安全边界
 
