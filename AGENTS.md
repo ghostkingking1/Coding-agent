@@ -80,9 +80,9 @@ docs(agent): document branch and validation workflow
 
 ### 后续顺序
 
-1. 增加流式运行事件，并为模型请求加入有限的重试、退避和错误分类策略。
-2. 增加上下文预算、摘要和持久化审计记录；在此基础上设计 checkpoint 与恢复。
-3. 在统一契约稳定后，再按实际需求增加 Anthropic 和 OpenAI Responses adapter、外部工具协议和 skills。
-4. 在开放更多命令或网络能力前，补充平台级 sandbox、网络策略和更细粒度的管理员策略。
+1. 完成任务级状态机、强制验证闭环和任务恢复 CLI/API。
+2. 补充平台级 sandbox 的 Linux `/proc`/设备限制、Windows 网络/注册表/ACL 崩溃恢复，并细化网络 Capability。
+3. 在统一契约稳定后增加 Anthropic adapter 和 Skills；远程 MCP、OAuth、多 Agent、容器/VM 属于后续扩展。
+4. 评估 JSONL 追加事件日志与 SQLite 索引/lease 控制面的混合持久化，不在迁移完成前移除现有 SQLite。
 
 在完成 workspace policy 和审批机制前，不得开放无约束终端或网络工具。

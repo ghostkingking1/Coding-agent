@@ -65,7 +65,7 @@ artifact 不存在/参数非法 -> read_tool_output 失败
 
 ## 10. 当前边界
 
-**已实现**运行级 diff、baseline 复用和工具输出 artifact；**部分实现**结果持久化和失败后的清理；**后续计划**是把 diff 引用、输出摘要和审计事件统一纳入持久化审计模型。
+**已实现**运行级 diff、baseline 复用和工具输出 artifact；**部分实现**结果持久化和失败后的清理；`RunDiff` 当前随 `runs.result_json` 保存，事件审计写入 SQLite `audit_events`。后续可采用“JSONL 追加事件事实源 + SQLite 索引/lease/查询控制面 + 文件系统 artifact”的混合模型，但 JSONL 尚未作为当前运行时存储启用。
 
 ## 11. 相关测试
 

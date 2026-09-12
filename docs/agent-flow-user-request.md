@@ -147,7 +147,7 @@ Approval 拒绝
   -> 生成当前可获得的 RunDiff
 ```
 
-命令工具额外处理超时和取消：终止子进程树，并在允许的平台上补发强制终止信号。模型网络请求由 HTTP transport 处理超时、取消、HTTP 错误、JSON 解析错误和响应大小限制。当前没有通用模型重试和退避策略。
+命令工具额外处理超时和取消：终止子进程树，并在允许的平台上补发强制终止信号。模型网络请求由 HTTP transport 处理超时、取消、HTTP 错误、JSON 解析错误和响应大小限制，并按错误类型执行有限重试和退避；不可重试错误会立即返回。
 
 ## 7. 持久化 / 审计
 
@@ -163,7 +163,7 @@ startRun
        更新 sessions.updated_at
 ```
 
-失败路径使用 `failRun` 保存错误和结束时间。进程退出或 lease 过期时，running run 会被标记为 `interrupted`。恢复只读取已提交的 `messages`，不会重放历史工具调用。
+失败路径使用 `failRun` 保存错误和结束时间。进程退出或 lease 过期时，running run 会被标记为 `interrupted`。恢复读取已提交的 `messages`、checkpoint 和幂等工具结果，不会盲目重放已完成的副作用；任务级恢复入口仍在路线图中。
 
 当前 SQLite 结构包含：
 
@@ -171,8 +171,10 @@ startRun
 - `runs`：每次请求的输入、状态、最终文本、错误、结果 JSON 以及 owner/lease 信息。
 - `messages`：Session 内按 `sequence` 排序的完整消息；assistant tool calls 和 tool 关联字段分别保存。
 - `schema_migrations`：数据库 schema 版本。
+- `checkpoints` / `context_checkpoints`：运行阶段、消息游标、上下文摘要和可恢复状态。
+- `audit_events`：按序保存运行、模型尝试/重试、流式完成、工具批次和 sandbox 结果的受限审计事件。
 
-运行事件包括 `model_started`、`tool_requested`、`tool_completed`、`tool_failed`、`run_finished` 和 `run_failed`。这些事件当前通过回调提供，尚未独立写入审计事件表。
+运行事件包括 `model_started`、`tool_requested`、`tool_completed`、`tool_failed`、`run_finished` 和 `run_failed`，既可通过回调实时消费，也可追加到 `audit_events`。
 
 ## 8. 安全边界
 
@@ -203,8 +205,9 @@ startRun
 - 独立 Reviewer / 自动代码审查阶段
 - Git 专用工具和提交流程
 - OS 级 Sandbox
-- 模型请求重试、退避和更细粒度恢复
-- 持久化运行事件审计
+- 任务级状态机、强制验证闭环和 Reviewer 阶段
+- 任务恢复 CLI/API（当前仅有 Session/Run 层恢复基础）
+- 更细粒度的网络 Capability、Skills 和跨设备恢复
 
 相关能力应在现有 `Agent`、`ToolRegistry`、`SessionStore` 和安全策略契约稳定后再扩展。
 

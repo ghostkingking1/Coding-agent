@@ -50,7 +50,7 @@
 
 ## 7. 持久化 / 审计
 
-原始消息由 Session 持久化；压缩后的模型视图不覆盖原始消息。`ContextResult.stages` 和 `degradation` 可用于运行事件或未来审计，但当前没有独立上下文审计表。
+原始消息由 Session 持久化；压缩后的模型视图不覆盖原始消息。`ContextResult.stages`、`degradation`、provider usage 校准和摘要结果会随运行事件及 context checkpoint 保存，便于恢复和诊断。
 
 ## 8. 安全边界
 
@@ -64,7 +64,7 @@
 
 ## 10. 当前边界
 
-**已实现**确定性估算、分阶段压缩和输出 artifact；**部分实现**摘要质量和 token 估算精度；**后续计划**是引入更准确的 provider tokenizer、总体 deadline 和持久化上下文审计。
+**已实现**确定性估算、分阶段压缩、输出 artifact、context checkpoint 和摘要缓存；**部分实现**摘要质量和 token 估算精度；**后续计划**是接入更准确的 provider tokenizer、总体 deadline 和跨设备上下文恢复。
 
 ## 11. 相关测试
 
