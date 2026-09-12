@@ -101,7 +101,19 @@
 
   export async function main(): Promise<void> {
     await cleanupStaleBaselineDirectories();
-    const input = process.argv.slice(2).join(" ").trim();
+    const args = process.argv.slice(2);
+    if (args.includes("--help") || args.includes("-h")) {
+      console.log("Usage: veil [request]");
+      console.log("  veil                 Start interactive mode");
+      console.log("  veil \"request\"       Run one request in the current workspace");
+      console.log("  veil --version       Show version");
+      return;
+    }
+    if (args.includes("--version") || args.includes("-v")) {
+      console.log("veil 0.1.0");
+      return;
+    }
+    const input = args.join(" ").trim();
     if (!input) {
       if (!isInteractiveTerminal(stdin, stdout)) {
         console.error("Interactive mode requires a TTY. Usage: npm start -- <request>");
@@ -163,7 +175,7 @@
     const ownsReadline = options.readline === undefined;
     const readline = options.readline ?? createInterface({ input, output, terminal: Boolean((input as NodeJS.ReadStream).isTTY && (output as NodeJS.WriteStream).isTTY) });
     try {
-      if (readline.terminal) output.write("coding-agent> ");
+      if (readline.terminal) output.write("veil> ");
       for await (const raw of readline) {
         const line = raw.trim();
         if (!line) { if (readline.terminal) output.write("coding-agent> "); continue; }
@@ -180,14 +192,14 @@
           await runTracker.dispose();
           runTracker = new RunChangeTracker({ root: options.root, sessionId: options.session.sessionId, reuseBaseline: true });
         }
-        if (readline.terminal) output.write("coding-agent> ");
+        if (readline.terminal) output.write("veil> ");
       }
     } finally {
       if (ownsReadline) readline.close();
       await options.session.close();
       await runTracker.dispose();
       const diff = await sessionTracker.finish();
-      if (diff.text) output.write(`\nSession changes:\n${diff.text}\n`);
+      if (diff.files.length > 0) output.write(`\n${formatRunDiffSummary(diff)}\n`);
       if (!diff.complete) errorOutput.write(formatSnapshotWarning("session", diff));
     }
   }
@@ -249,9 +261,22 @@
 
   function printRunDiff(diff: RunDiff | undefined, output: Writable = stdout, errorOutput: Writable = process.stderr): void {
     if (!diff) return;
-    if (diff.text) output.write(`\nChanges:\n${diff.text}\n`);
+    if (diff.files.length > 0) output.write(`\n${formatRunDiffSummary(diff)}\n`);
     if (!diff.complete) errorOutput.write(formatSnapshotWarning("change", diff));
     if (diff.untrackedPaths.length > 0) errorOutput.write(`[agent] warning: changes could not be diffed: ${diff.untrackedPaths.join(", ")}\n`);
+  }
+
+  export function formatRunDiffSummary(diff: RunDiff): string {
+    const added = diff.files.reduce((sum, file) => sum + (file.addedLines ?? 0), 0);
+    const removed = diff.files.reduce((sum, file) => sum + (file.removedLines ?? 0), 0);
+    const lines = [`Changes: ${diff.files.length} file(s) changed, +${added} -${removed}`];
+    for (const file of diff.files) {
+      const addedLines = file.addedLines ?? 0;
+      const removedLines = file.removedLines ?? 0;
+      const status = addedLines > 0 && removedLines === 0 ? "A" : addedLines === 0 && removedLines > 0 ? "D" : "M";
+      lines.push(` ${status} ${file.path} +${addedLines} -${removedLines}`);
+    }
+    return lines.join("\n");
   }
 
   function printGitChanges(changes: import("./repository/git.ts").GitChangeReport | undefined, output: Writable = process.stderr): void {

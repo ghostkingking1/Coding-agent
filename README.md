@@ -12,7 +12,15 @@ npm test
 npm start -- "请检查这个项目"
 ```
 
-不带参数时，`npm start` 会在 TTY 中进入持续对话 REPL；每行执行一次 Agent，输入 `exit` 或 `quit` 退出并查看 Session diff。非 TTY 环境必须显式提供请求参数。
+开发时可使用 `npm start -- "请求"`；不带参数时会在 TTY 中进入持续对话 REPL。安装全局命令后使用 `veil "请求"`，当前终端目录会作为 workspace；输入 `veil` 可进入持续对话，输入 `exit` 或 `quit` 退出。非 TTY 环境必须显式提供请求参数。
+
+全局安装：
+
+```text
+npm install -g .
+veil --help
+veil "分析当前目录并运行测试"
+```
 
 未配置真实模型时，CLI 使用不联网的 `EchoModel` 演示执行循环。
 
@@ -100,7 +108,7 @@ docs/
 - 将生产代码按 `agent`、`tools`、`model` 分类，将测试代码独立放入 `test/`。
 - CLI 只向模型开放读取、搜索、patch 和 `run_tests`，不开放通用 `run_command`；终端输出模型和工具调用摘要。
 - 使用真实 OpenAI-compatible `glm-5.3` 在隔离仓库完成读取、两次修改、失败测试、修复和通过测试的手工验收，未发现需要修复的 adapter 兼容性问题。
-- `Agent.run()` 汇总本次运行中由 `apply_patch` 成功写入的文件，结束时返回带文件名和上下文的最终 unified diff。
+- `Agent.run()` 汇总本次运行中由 `apply_patch`、命令或测试产生的文件变化；`veil` 终端只显示文件数量及新增/删除行数，完整 unified diff 仍保存在 Agent 结果中。
 - 最终 diff 基于运行前后工作区快照，也能捕获命令或测试脚本产生的新增、修改和删除文件；默认忽略 `.git`、`node_modules` 和隐藏路径。
 - 快照索引只保留路径、类型、大小、修改时间和 SHA-256；文本原始内容保存于带 `sessionId/runId` 的临时 baseline 目录，结束或异常时清理。
 # Rust Sandbox Helper

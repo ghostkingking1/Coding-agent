@@ -2,6 +2,9 @@
   "name": "coding-agent",
   "version": "0.1.0",
   "private": true,
+  "bin": {
+    "veil": "./bin/veil.js"
+  },
   "description": "A minimal native TypeScript coding agent execution loop.",
   "type": "module",
   "engines": {
