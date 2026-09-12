@@ -72,11 +72,13 @@ docs/
 
 ### 2026-09-12
 
-- 增加 OpenAI Responses 协议、流式增量解析和显式协议配置。
-- 增加本地 MCP stdio 工具发现/调用，并复用 Sandbox、Capability、Approval 和输出限制。
-- 增加仓库 `AGENTS.md` 指令加载、Git 只读上下文和 Agent/User 变更区分。
-- 增加 Rust Helper 的平台隔离、资源限制、执行审计和 Fail Closed 能力说明。
-- 文档同步当前已完成能力、未完成边界和下一阶段任务状态机计划。
+相较于 2026-09-08 阶段，本阶段新增以下可运行能力：
+
+- 增加 `OpenAIResponsesModel`，支持 Responses 请求格式、函数调用延续、`previous_response_id`，以及 SSE 文本和工具调用增量解析；协议必须通过显式配置选择。
+- 增加本地 MCP stdio Server 管理：在工作区内发现并启动配置的 Server，读取工具清单并调用工具；MCP 调用统一经过 capability 声明、审批、sandbox 隔离和输出大小限制。
+- 增加仓库上下文能力：沿 workspace 目录链加载 `AGENTS.md` 指令，生成 digest 和截断状态；新增只读 Git 状态/文件 diff 查询，并区分 Agent 本次改动与运行前已有改动。
+- 强化命令 sandbox：Rust Helper 在 Windows 使用 Job Object、Restricted Token、句柄和网络限制，在 Linux 探测 namespace、`no_new_privs`、seccomp/cgroup 能力；无法证明隔离时 fail closed。
+- CLI 现在会向模型注入受限仓库上下文，并继续只暴露读取、搜索、patch 和测试工具；通用 `run_command` 与未声明能力的 MCP 工具不会暴露给模型。
 
 ### 2026-09-08
 
