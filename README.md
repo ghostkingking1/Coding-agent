@@ -72,8 +72,6 @@ docs/
 
 ### 2026-09-12
 
-相较于 2026-09-08 阶段，本阶段新增以下可运行能力：
-
 - 增加 `OpenAIResponsesModel`，支持 Responses 请求格式、函数调用延续、`previous_response_id`，以及 SSE 文本和工具调用增量解析；协议必须通过显式配置选择。
 - 增加本地 MCP stdio Server 管理：在工作区内发现并启动配置的 Server，读取工具清单并调用工具；MCP 调用统一经过 capability 声明、审批、sandbox 隔离和输出大小限制。
 - 增加仓库上下文能力：沿 workspace 目录链加载 `AGENTS.md` 指令，生成 digest 和截断状态；新增只读 Git 状态/文件 diff 查询，并区分 Agent 本次改动与运行前已有改动。
