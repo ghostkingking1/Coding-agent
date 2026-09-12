@@ -19,6 +19,12 @@
     type RunEvent,
     type RunDiff,
     RustHelperSandboxBackend,
+    RepositoryInstructionLoader,
+    formatRepositoryInstructions,
+    GitChangeTracker,
+    GitRepository,
+    createRepositoryTools,
+    type RepositoryInstructions,
   } from "./index.ts";
   import { cleanupStaleBaselineDirectories, RunChangeTracker } from "./agent/run-diff.ts";
   import { Session } from "./agent/session.ts";
@@ -27,15 +33,17 @@
   export const CLI_MODEL_TOOL_NAMES = ["read_file", "list_files", "apply_patch", "run_tests", "search_text"] as const;
 
   /** 让模型把修改和测试作为同一个完成条件，而不是在未验证时直接收尾。 */
-  export function createCodingSystemPrompt(workspaceRoot: string): string {
+  export function createCodingSystemPrompt(workspaceRoot: string, instructions?: RepositoryInstructions): string {
     return [
       "You are a coding agent working in the current workspace.",
       `Workspace root: ${workspaceRoot}`,
-      "Available tools: read_file, list_files, search_text, apply_patch, run_tests.",
+      "Available tools: read_file, list_files, search_text, apply_patch, run_tests, get_repository_instructions, get_git_status, get_git_file_diff.",
+      "Before modifying files, inspect the applicable repository instructions and current Git status. Do not claim pre-existing user changes as your own.",
       "Inspect relevant files before editing. Use apply_patch only for changes inside the workspace.",
       "After modifying code, you must use run_tests to verify the change. If tests fail, inspect the failure, repair the code, and run run_tests again. Do not finish until the relevant tests pass.",
       "Report the verified result concisely.",
-    ].join("\n");
+      instructions ? formatRepositoryInstructions(instructions) : "",
+    ].filter(Boolean).join("\n\n");
   }
 
   /** 将已有 Agent 事件收敛为单行终端摘要，避免把工具结果重复打印到终端。 */
@@ -65,14 +73,16 @@
   }
 
   /** 仅在 Rust Helper 证明 OS 隔离和默认禁网后，才向模型注册通用命令工具。 */
-  export function registerCliTools(registry: ToolRegistry, workspace: WorkspacePolicy, helperPath = process.env.CODING_AGENT_SANDBOX_HELPER): void {
+  export function registerCliTools(registry: ToolRegistry, workspace: WorkspacePolicy, helperPath = process.env.CODING_AGENT_SANDBOX_HELPER, repositoryTools: readonly import("./agent/types.ts").Tool[] = []): void {
     if (!helperPath) {
       for (const tool of createWorkspaceTools(workspace)) if (tool.name !== "run_command") registry.register(tool);
+      for (const tool of repositoryTools) registry.register(tool);
       return;
     }
     const sandbox = new RustHelperSandboxBackend({ helperPath });
     sandbox.assertAvailable(["process.spawn", "workspace.fs", "network.off", "os.isolation"]);
     for (const tool of createWorkspaceTools(workspace, { sandbox, requireOsIsolation: true })) registry.register(tool);
+    for (const tool of repositoryTools) registry.register(tool);
   }
 
   class EchoModel implements ModelClient {
@@ -104,9 +114,10 @@
 
     const config = readModelRuntimeConfig(process.env);
     const workspace = new WorkspacePolicy({ root: process.cwd() });
+    const repositoryContext = await loadRepositoryContext(workspace.root);
     if (!config) {
       const result = await new Agent(new EchoModel(), new ToolRegistry(), {
-        systemPrompt: createCodingSystemPrompt(process.cwd()),
+        systemPrompt: createCodingSystemPrompt(process.cwd(), repositoryContext.instructions),
         onEvent: writeRunEvent,
         changeTracker: new RunChangeTracker({ root: workspace.root }),
       }).run(input);
@@ -124,22 +135,23 @@
       const registry = new ToolRegistry(new SecurityPolicy({
         approval: new DefaultApprovalPolicy((request) => prompt.confirmTool(request)),
       }));
-      registerCliTools(registry, workspace);
+      registerCliTools(registry, workspace, undefined, createRepositoryTools(repositoryContext.instructions, repositoryContext.repository));
 
       const result = await new Agent(model, registry, {
-        systemPrompt: createCodingSystemPrompt(workspace.root),
+        systemPrompt: createCodingSystemPrompt(workspace.root, repositoryContext.instructions),
         onEvent: writeRunEvent,
         changeTracker: new RunChangeTracker({ root: workspace.root }),
-      }).run(input);
+      }).run(input, { gitChangeTracker: repositoryContext.tracker });
       console.log(result.finalText);
       printRunDiff(result.diff);
+      printGitChanges(result.gitChanges);
     } finally {
       prompt.close();
     }
   }
 
   /** 无参数时启动持续对话；每行输入独立运行一次 Agent，并保留 Session 上下文。 */
-  export async function runInteractiveSession(options: { readonly session: Session; readonly root: string; readonly input?: Readable; readonly output?: Writable; readonly errorOutput?: Writable; readonly readline?: ReturnType<typeof createInterface> }): Promise<void> {
+  export async function runInteractiveSession(options: { readonly session: Session; readonly root: string; readonly gitChangeTracker?: () => GitChangeTracker; readonly input?: Readable; readonly output?: Writable; readonly errorOutput?: Writable; readonly readline?: ReturnType<typeof createInterface> }): Promise<void> {
     const input = options.input ?? stdin;
     const output = options.output ?? stdout;
     const errorOutput = options.errorOutput ?? process.stderr;
@@ -157,9 +169,10 @@
         if (!line) { if (readline.terminal) output.write("coding-agent> "); continue; }
         if (line === "exit" || line === "quit") break;
         try {
-          const result = await options.session.run(line, { changeTracker: runTracker });
+          const result = await options.session.run(line, { changeTracker: runTracker, gitChangeTracker: options.gitChangeTracker?.() });
           output.write(`${result.finalText}\n`);
           printRunDiff(result.diff, output, errorOutput);
+          printGitChanges(result.gitChanges, errorOutput);
         } catch (error) {
           // Agent 已通过 run_failed 事件输出模型或工具错误，避免在 REPL 中重复同一错误文本。
           errorOutput.write("[agent] request stopped; you can submit another request.\n");
@@ -187,8 +200,9 @@
   async function runConfiguredInteractiveSession(): Promise<void> {
     const config = readModelRuntimeConfig(process.env);
     const workspace = new WorkspacePolicy({ root: process.cwd() });
+    const repositoryContext = await loadRepositoryContext(workspace.root);
     if (!config) {
-      await runInteractiveSession({ session: new Session(new Agent(new EchoModel(), new ToolRegistry(), { systemPrompt: createCodingSystemPrompt(workspace.root), onEvent: writeRunEvent })), root: workspace.root });
+      await runInteractiveSession({ session: new Session(new Agent(new EchoModel(), new ToolRegistry(), { systemPrompt: createCodingSystemPrompt(workspace.root, repositoryContext.instructions), onEvent: writeRunEvent })), root: workspace.root, gitChangeTracker: () => new GitChangeTracker(repositoryContext.repository) });
       return;
     }
     // REPL 和审批问题共享一个 readline，避免两个终端监听器重复回显输入。
@@ -198,8 +212,8 @@
       // 模型服务由本机 .env 显式配置，CLI 将其视为会话级授权，不逐次打断用户。
       const model = createConfiguredModelClient(config, { approval: new DefaultModelApprovalPolicy(() => true) });
       const registry = new ToolRegistry(new SecurityPolicy({ approval: new DefaultApprovalPolicy((request) => prompt.confirmTool(request)) }));
-      registerCliTools(registry, workspace);
-      await runInteractiveSession({ session: new Session(new Agent(model, registry, { systemPrompt: createCodingSystemPrompt(workspace.root), onEvent: writeRunEvent })), root: workspace.root, readline });
+      registerCliTools(registry, workspace, undefined, createRepositoryTools(repositoryContext.instructions, repositoryContext.repository));
+      await runInteractiveSession({ session: new Session(new Agent(model, registry, { systemPrompt: createCodingSystemPrompt(workspace.root, repositoryContext.instructions), onEvent: writeRunEvent })), root: workspace.root, readline, gitChangeTracker: () => new GitChangeTracker(repositoryContext.repository) });
     } finally { prompt.close(); }
   }
 
@@ -238,6 +252,18 @@
     if (diff.text) output.write(`\nChanges:\n${diff.text}\n`);
     if (!diff.complete) errorOutput.write(formatSnapshotWarning("change", diff));
     if (diff.untrackedPaths.length > 0) errorOutput.write(`[agent] warning: changes could not be diffed: ${diff.untrackedPaths.join(", ")}\n`);
+  }
+
+  function printGitChanges(changes: import("./repository/git.ts").GitChangeReport | undefined, output: Writable = process.stderr): void {
+    if (!changes?.after.isRepository) return;
+    const branch = changes.after.branch ?? "detached HEAD";
+    output.write(`[agent] Git ${branch} at ${changes.after.head ?? "unknown"}; user changes: ${changes.userModifiedPaths.join(", ") || "none"}; agent changes: ${changes.agentModifiedPaths.join(", ") || "none"}${changes.overlappingPaths.length ? `; overlapping: ${changes.overlappingPaths.join(", ")}` : ""}\n`);
+  }
+
+  async function loadRepositoryContext(root: string): Promise<{ readonly instructions: RepositoryInstructions; readonly repository: GitRepository; readonly tracker: GitChangeTracker }> {
+    const instructions = await new RepositoryInstructionLoader().load({ workspaceRoot: root, enabled: process.env.CODING_AGENT_DISABLE_REPOSITORY_INSTRUCTIONS !== "1" });
+    const repository = new GitRepository(root);
+    return { instructions, repository, tracker: new GitChangeTracker(repository) };
   }
 
   function writeRunEvent(event: RunEvent): void {

@@ -80,7 +80,13 @@
 
 ## 开发顺序和质量门槛
 
-当前状态：MVP 控制面和 Rust Helper 协议已实现。Rust Helper 的正式 OS 隔离能力仍按平台验证：Linux 通过 `unshare` capability 才能启用 `os.isolation`；Windows 若 helper 未声明该 capability，强隔离请求继续 Fail Closed。
+当前状态：MVP 控制面和 Rust Helper 协议已实现；V1 已加入执行 ID、资源限制请求、Helper 侧 wall-clock 超时、Windows Job Object 进程/内存/CPU 限制、Linux `no_new_privs`/地址空间/进程数限制，以及命令执行审计事件。V2 已加入 Linux namespace 内的只读宿主根、仅 workspace 可写 bind mount、凭据目录覆盖、seccomp 过滤，以及 Windows 每次执行独立 AppContainer、`DISABLE_MAX_PRIVILEGE` Restricted Token、非 reparse workspace 最小 ACL 保存/恢复、Job Object 与标准流句柄白名单组合隔离。Windows 目标以挂起状态创建，必须先加入已配置 Job 后才恢复执行，避免 Job 纳入前的子进程竞态。
+
+仍未宣称完成的 V2 能力：精细 `/proc`/设备限制，以及 Windows 的独立网络过滤、注册表显式 deny policy 和 ACL 崩溃后恢复守护。AppContainer 与 Restricted Token 默认拒绝未授权的网络、设备、注册表和用户凭据访问；但这些更细粒度策略必须有平台级逃逸验证后才能单独声明 Capability。Linux seccomp 会在握手中以独立 Helper 子进程探测；成功时声明 `hardening.seccomp`，并在 namespace/mount 建立后、目标程序 exec 前拒绝挂载、namespace、ptrace、bpf、内核模块、keyring 等高风险 syscall。Linux cgroup v2 会在宿主已委派可写层级时探测并声明，执行时把完整 sandbox 子树加入该 cgroup 并写入内存、PID、CPU 配额。其余能力也必须由平台探测证明后才能加入 Capability，不能以“请求已携带限制”代替实际内核隔离。
+
+Windows 已有集成回归：workspace 写入成功、workspace 外读取失败、回环 TCP 失败以及超时后的延迟写入不发生。严格 AppContainer 不会修改宿主工具链 ACL；若目标程序需要继续启动未被系统授予 AppContainer 执行权限的宿主二进制，执行会明确失败而非放宽权限。这是当前 Fail Closed 的兼容性边界，受控工具链镜像属于后续隔离后端工作。
+
+平台能力仍按探测结果决定：Linux 通过 `unshare` 和 `no_new_privs` 前置设置才启用对应能力；Windows 只有 AppContainer、Workspace ACL、Restricted Token、句柄白名单和 Job Object 探测成功才启用 `os.isolation`。任何能力不足继续 Fail Closed。
 
 推荐分支：`codex/sandbox-mvp`、`codex/sandbox-v1-stability`、`codex/sandbox-v2-hardening`、`codex/sandbox-v3-network-policy`、`codex/sandbox-v4-isolation-backends`。
 

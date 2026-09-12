@@ -184,6 +184,8 @@ export interface ModelRequest {
   /** 取消当前模型请求的信号。 */
   readonly signal?: AbortSignal;
   readonly contextResult?: ContextResult;
+  /** Responses 协议可选的服务端上下文引用。 */
+  readonly previousResponseId?: string;
 }
 
 /** 真实 provider 和测试替身共同实现的统一模型接口。 */
@@ -313,6 +315,8 @@ export interface AgentRunOptions {
   /** 从已持久化的 run 内 checkpoint 继续，不能与新输入拼接。 */
   resumeCheckpoint?: CheckpointRecord;
   auditSink?: AuditSink;
+  /** 可选的 Git 基线跟踪器；仅采集只读状态，不参与任何 Git 写入。 */
+  gitChangeTracker?: import("../repository/git.ts").GitChangeTracker;
 }
 
 export interface CheckpointRecord {
@@ -338,4 +342,6 @@ export interface AgentResult {
   stopReason: "completed" | "max_steps";
   /** 本次运行成功写入文件的最终 unified diff。 */
   diff?: import("./run-diff.ts").RunDiff;
+  /** 本次运行前后 Git 状态及与 Agent diff 的归属交叉结果。 */
+  gitChanges?: import("../repository/git.ts").GitChangeReport;
 }

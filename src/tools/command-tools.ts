@@ -7,6 +7,7 @@ import { WorkspacePolicy } from "./security.ts";
 import { argsInputSchema, envInputSchema, singleLineTextSchema } from "./tool-input-schemas.ts";
 import { defineTool } from "./tool-schema.ts";
 import { executionRequestDigest, ProcessSandboxBackend, type ExecutionRequest, type SandboxBackend } from "./sandbox.ts";
+import crypto from "node:crypto";
 import type { Tool, ToolContext } from "../agent/types.ts";
 
 /** run_command 工具的安全和资源限制配置。 */
@@ -23,6 +24,9 @@ export interface RunCommandToolOptions {
   readonly allowedEnv?: readonly string[];
   readonly sandbox?: SandboxBackend;
   readonly requireOsIsolation?: boolean;
+  readonly cpuTimeMs?: number;
+  readonly memoryBytes?: number;
+  readonly maxProcesses?: number;
 }
 
 /** run_command 审批预览，不包含环境变量值。 */
@@ -62,6 +66,9 @@ interface NormalizedRunCommandOptions {
   readonly allowedEnv: readonly string[];
   readonly sandbox: SandboxBackend;
   readonly requireOsIsolation: boolean;
+  readonly cpuTimeMs: number;
+  readonly memoryBytes: number;
+  readonly maxProcesses: number;
 }
 
 interface PlannedCommand {
@@ -131,10 +138,16 @@ function normalizeOptions(options: RunCommandToolOptions): NormalizedRunCommandO
   const maxTimeoutMs = options.maxTimeoutMs ?? DEFAULT_MAX_COMMAND_TIMEOUT_MS;
   const maxStdoutBytes = options.maxStdoutBytes ?? DEFAULT_MAX_STREAM_BYTES;
   const maxStderrBytes = options.maxStderrBytes ?? DEFAULT_MAX_STREAM_BYTES;
+  const cpuTimeMs = options.cpuTimeMs ?? maxTimeoutMs;
+  const memoryBytes = options.memoryBytes ?? 512 * 1024 * 1024;
+  const maxProcesses = options.maxProcesses ?? 64;
   assertPositiveInteger(defaultTimeoutMs, "defaultTimeoutMs");
   assertPositiveInteger(maxTimeoutMs, "maxTimeoutMs");
   assertPositiveInteger(maxStdoutBytes, "maxStdoutBytes");
   assertPositiveInteger(maxStderrBytes, "maxStderrBytes");
+  assertPositiveInteger(cpuTimeMs, "cpuTimeMs");
+  assertPositiveInteger(memoryBytes, "memoryBytes");
+  assertPositiveInteger(maxProcesses, "maxProcesses");
   if (defaultTimeoutMs > maxTimeoutMs) throw new Error("defaultTimeoutMs must not exceed maxTimeoutMs");
   return {
     defaultTimeoutMs,
@@ -144,6 +157,9 @@ function normalizeOptions(options: RunCommandToolOptions): NormalizedRunCommandO
     allowedEnv: options.allowedEnv ?? DEFAULT_ALLOWED_ENV,
     sandbox: options.sandbox ?? new ProcessSandboxBackend(),
     requireOsIsolation: options.requireOsIsolation ?? false,
+    cpuTimeMs,
+    memoryBytes,
+    maxProcesses,
   };
 }
 
@@ -156,6 +172,7 @@ function planCommand(policy: WorkspacePolicy, options: NormalizedRunCommandOptio
   const env = buildEnvironment(options.allowedEnv, input.env);
   const envKeys = Object.keys(env).sort((a, b) => a.localeCompare(b));
   const request: ExecutionRequest = {
+    executionId: crypto.randomUUID(),
     workspaceRoot: policy.root,
     executable: input.command,
     args: input.args,
@@ -165,6 +182,9 @@ function planCommand(policy: WorkspacePolicy, options: NormalizedRunCommandOptio
     maxStdoutBytes: options.maxStdoutBytes,
     maxStderrBytes: options.maxStderrBytes,
     network: "off",
+    cpuTimeMs: options.cpuTimeMs,
+    memoryBytes: options.memoryBytes,
+    maxProcesses: options.maxProcesses,
   };
   const required = options.requireOsIsolation
     ? ["process.spawn", "workspace.fs", "network.off", "os.isolation"] as const
@@ -228,6 +248,24 @@ async function runPlannedCommand(plan: PlannedCommand, context: ToolContext): Pr
   const spawnPlan = planSpawn(plan);
 
   return new Promise<RunCommandResult>((resolve) => {
+    void context.auditSink?.record({
+      sessionId: context.sessionId,
+      runId: context.runId,
+      eventType: "sandbox_execution_started",
+      toolName: "run_command",
+      status: "started",
+      requestId: plan.request.executionId,
+      metadata: {
+        requestDigest: plan.preview.requestDigest,
+        backend: plan.preview.sandbox.backend,
+        backendVersion: plan.preview.sandbox.version,
+        capabilities: plan.preview.sandbox.capabilities,
+        timeoutMs: plan.request.timeoutMs,
+        cpuTimeMs: plan.request.cpuTimeMs,
+        memoryBytes: plan.request.memoryBytes,
+        maxProcesses: plan.request.maxProcesses,
+      },
+    });
     const child = plan.sandbox.spawn({
       ...plan.request,
       executable: spawnPlan.command,
@@ -257,6 +295,22 @@ async function runPlannedCommand(plan: PlannedCommand, context: ToolContext): Pr
         durationMs: Date.now() - startedAt,
         ...(out ? { stdoutArtifact: { artifactId: out.artifactId, complete: out.complete } } : {}),
         ...(err ? { stderrArtifact: { artifactId: err.artifactId, complete: err.complete } } : {}),
+      });
+      void context.auditSink?.record({
+        sessionId: context.sessionId,
+        runId: context.runId,
+        eventType: "sandbox_execution_finished",
+        toolName: "run_command",
+        status: timedOut ? "timed_out" : aborted ? "aborted" : result.error ? "error" : result.exitCode === 0 ? "completed" : "failed",
+        requestId: plan.request.executionId,
+        metadata: {
+          requestDigest: plan.preview.requestDigest,
+          exitCode: result.exitCode,
+          signal: result.signal,
+          durationMs: Date.now() - startedAt,
+          stdoutTruncated: stdout.truncated(),
+          stderrTruncated: stderr.truncated(),
+        },
       });
     };
 

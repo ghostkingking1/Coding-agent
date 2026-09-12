@@ -1,6 +1,7 @@
 import type { ModelClient } from "../agent/types.ts";
 import { DefaultModelApprovalPolicy, ApprovedModelClient, type ModelApprovalPolicy, type ModelApprovalRequest } from "./approval.ts";
 import { OpenAICompatibleModel } from "./openai-compatible.ts";
+import { OpenAIResponsesModel } from "./openai-responses.ts";
 import type { HttpTransport } from "./transport.ts";
 
 const PROVIDER_ENV = "CODING_AGENT_MODEL_PROVIDER";
@@ -9,10 +10,12 @@ const MODEL_ENV = "CODING_AGENT_MODEL";
 const API_KEY_ENV = "CODING_AGENT_MODEL_API_KEY";
 const TIMEOUT_ENV = "CODING_AGENT_MODEL_TIMEOUT_MS";
 const MAX_RESPONSE_BYTES_ENV = "CODING_AGENT_MODEL_MAX_RESPONSE_BYTES";
+const PROTOCOL_ENV = "CODING_AGENT_MODEL_PROTOCOL";
 
 /** 当前支持的显式模型运行时配置。 */
 export interface OpenAICompatibleRuntimeConfig {
   readonly provider: "openai-compatible";
+  readonly protocol: "chat-completions" | "responses";
   readonly baseUrl: string;
   readonly model: string;
   readonly apiKey?: string;
@@ -41,6 +44,7 @@ export function readModelRuntimeConfig(environment: Readonly<Record<string, stri
     environment[API_KEY_ENV],
     environment[TIMEOUT_ENV],
     environment[MAX_RESPONSE_BYTES_ENV],
+    environment[PROTOCOL_ENV],
   ];
   if (values.every((value) => value === undefined)) return undefined;
 
@@ -50,6 +54,7 @@ export function readModelRuntimeConfig(environment: Readonly<Record<string, stri
   }
   return {
     provider,
+    protocol: parseProtocol(optionalEnvironmentValue(environment, PROTOCOL_ENV)),
     baseUrl: requireEnvironmentValue(environment, BASE_URL_ENV),
     model: requireEnvironmentValue(environment, MODEL_ENV),
     apiKey: optionalEnvironmentValue(environment, API_KEY_ENV),
@@ -60,7 +65,8 @@ export function readModelRuntimeConfig(environment: Readonly<Record<string, stri
 
 /** 由已验证配置创建受网络审批保护的模型客户端。 */
 export function createConfiguredModelClient(config: ModelRuntimeConfig, options: ModelRuntimeOptions = {}): ModelClient {
-  const client = new OpenAICompatibleModel({
+  const Client = config.protocol === "responses" ? OpenAIResponsesModel : OpenAICompatibleModel;
+  const client = new Client({
     baseUrl: config.baseUrl,
     model: config.model,
     apiKey: config.apiKey,
@@ -92,4 +98,10 @@ function optionalPositiveInteger(environment: Readonly<Record<string, string | u
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1) throw new Error(`${name} must be a positive integer`);
   return parsed;
+}
+
+function parseProtocol(value: string | undefined): "chat-completions" | "responses" {
+  if (value === undefined || value === "chat-completions") return "chat-completions";
+  if (value === "responses") return "responses";
+  throw new Error(`${PROTOCOL_ENV} must be chat-completions or responses`);
 }

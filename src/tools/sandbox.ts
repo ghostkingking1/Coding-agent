@@ -7,7 +7,17 @@ export type SandboxCapability =
   | "process-tree"
   | "workspace.fs"
   | "network.off"
-  | "os.isolation";
+  | "os.isolation"
+  | "protocol.v1"
+  | "resource.limits"
+  | "hardening.no_new_privs"
+  | "hardening.cgroup"
+  | "hardening.read_only_root"
+  | "hardening.credential_paths"
+  | "hardening.appcontainer"
+  | "hardening.seccomp"
+  | "hardening.handle_whitelist"
+  | "hardening.restricted_token";
 
 export interface SandboxCapabilities {
   readonly backend: string;
@@ -17,6 +27,7 @@ export interface SandboxCapabilities {
 
 /** 经过规范化、可被审批绑定的完整执行请求。 */
 export interface ExecutionRequest {
+  readonly executionId: string;
   readonly workspaceRoot: string;
   readonly executable: string;
   readonly args: readonly string[];
@@ -26,6 +37,9 @@ export interface ExecutionRequest {
   readonly maxStdoutBytes: number;
   readonly maxStderrBytes: number;
   readonly network: "off";
+  readonly cpuTimeMs: number;
+  readonly memoryBytes: number;
+  readonly maxProcesses: number;
 }
 
 export interface SandboxSpawnRequest extends ExecutionRequest {
@@ -128,6 +142,7 @@ export class RustHelperSandboxBackend implements SandboxBackend {
     this.assertAvailable(["process.spawn", "network.off"]);
     const encoded = Buffer.from(JSON.stringify({
       workspace_root: request.workspaceRoot,
+      execution_id: request.executionId,
       executable: request.executable,
       args: request.args,
       cwd: request.cwd,
@@ -136,6 +151,9 @@ export class RustHelperSandboxBackend implements SandboxBackend {
       max_stdout_bytes: request.maxStdoutBytes,
       max_stderr_bytes: request.maxStderrBytes,
       network: request.network,
+      cpu_time_ms: request.cpuTimeMs,
+      memory_bytes: request.memoryBytes,
+      max_processes: request.maxProcesses,
     }), "utf8").toString("base64");
     return spawn(this.helperPath, ["--execute", encoded], {
       shell: false,
@@ -149,6 +167,7 @@ export class RustHelperSandboxBackend implements SandboxBackend {
 /** 对规范化请求生成稳定摘要，Approval 必须绑定该摘要而不是命令字符串。 */
 export function executionRequestDigest(request: ExecutionRequest): string {
   const canonical = JSON.stringify({
+    // executionId 只用于运行追踪，不属于审批语义；相同请求的 preview/execute 必须得到同一 digest。
     workspaceRoot: request.workspaceRoot,
     executable: request.executable,
     args: [...request.args],
@@ -158,6 +177,9 @@ export function executionRequestDigest(request: ExecutionRequest): string {
     maxStdoutBytes: request.maxStdoutBytes,
     maxStderrBytes: request.maxStderrBytes,
     network: request.network,
+    cpuTimeMs: request.cpuTimeMs,
+    memoryBytes: request.memoryBytes,
+    maxProcesses: request.maxProcesses,
   });
   return crypto.createHash("sha256").update(canonical).digest("hex");
 }

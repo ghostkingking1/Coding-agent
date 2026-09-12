@@ -58,6 +58,7 @@ export class Agent {
       runId: runOptions.runId,
     });
     await changeTracker?.start();
+    await runOptions.gitChangeTracker?.start();
     let completed = false;
     try {
       const result = await this.executeRun(input, messages, changeTracker, runOptions);
@@ -119,12 +120,14 @@ export class Agent {
 
       const calls = response.message.toolCalls ?? [];
       if (calls.length === 0) {
+        const diff = changeTracker ? await changeTracker.finish() : undefined;
         const result = {
           finalText: response.message.content,
           messages: [...messages],
           steps: step,
           stopReason: "completed",
-          ...(changeTracker ? { diff: await changeTracker.finish() } : {}),
+          ...(diff ? { diff } : {}),
+          ...(runOptions.gitChangeTracker ? { gitChanges: await runOptions.gitChangeTracker.finish(diff) } : {}),
         } as const;
         await this.emit({ type: "run_finished", steps: result.steps, stopReason: result.stopReason });
         return result;
@@ -133,12 +136,14 @@ export class Agent {
       await this.executePendingCalls(calls, messages, step, changeTracker, runOptions, replayToolResults);
     }
 
+    const diff = changeTracker ? await changeTracker.finish() : undefined;
     const result = {
       finalText: "",
       messages: [...messages],
       steps: this.options.maxSteps,
       stopReason: "max_steps",
-      ...(changeTracker ? { diff: await changeTracker.finish() } : {}),
+      ...(diff ? { diff } : {}),
+      ...(runOptions.gitChangeTracker ? { gitChanges: await runOptions.gitChangeTracker.finish(diff) } : {}),
     } as const;
     await this.emit({ type: "run_finished", steps: result.steps, stopReason: result.stopReason });
     return result;

@@ -137,7 +137,7 @@ export class Session {
   }
 
   /** 顺序执行一次 run；成功的完整消息上下文才会提交到 Session。 */
-  async run(input: string, options: Pick<AgentRunOptions, "changeTracker"> = {}): Promise<RunResult> {
+  async run(input: string, options: Pick<AgentRunOptions, "changeTracker" | "gitChangeTracker"> = {}): Promise<RunResult> {
     if (this.statusValue === "closed") throw new Error("Session is closed");
     if (this.running) throw new Error("Session already has a run in progress");
     const runId = `run_${crypto.randomUUID()}`;
@@ -159,6 +159,7 @@ export class Session {
         sessionId: this.sessionId,
         runId,
         changeTracker,
+        gitChangeTracker: options.gitChangeTracker,
         checkpoint: this.store ? { save: (checkpoint) => this.store!.saveCheckpoint(checkpoint) } : undefined,
         auditSink: this.store ? { record: (event) => this.store!.record(event) } : undefined,
       });

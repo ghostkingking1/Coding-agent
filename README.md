@@ -28,12 +28,13 @@ Copy-Item .env.example .env
 
 ```dotenv
 CODING_AGENT_MODEL_PROVIDER=openai-compatible
+CODING_AGENT_MODEL_PROTOCOL=chat-completions
 CODING_AGENT_MODEL_BASE_URL=https://api.openai.com/v1
 CODING_AGENT_MODEL=your-tool-capable-cloud-model
 CODING_AGENT_MODEL_API_KEY=your-api-key
 ```
 
-`CODING_AGENT_MODEL_BASE_URL` 必须是服务的 API 根地址，`CODING_AGENT_MODEL` 必须是该服务实际提供的模型名，`CODING_AGENT_MODEL_API_KEY` 用于 Bearer 认证。API key 只写入本机 `.env`，不要提交到 Git。`CODING_AGENT_MODEL_TIMEOUT_MS` 和 `CODING_AGENT_MODEL_MAX_RESPONSE_BYTES` 可选，但必须是正整数。完整 `.env` 配置代表对该模型服务的会话级授权；写入和命令执行仍会在交互式终端中请求确认，非 TTY 环境默认拒绝这些副作用。
+`CODING_AGENT_MODEL_PROTOCOL` 显式选择 `chat-completions` 或 `responses`，默认是 `chat-completions`；禁止根据响应内容自动猜测协议。`CODING_AGENT_MODEL_BASE_URL` 必须是服务的 API 根地址，`CODING_AGENT_MODEL` 必须是该服务实际提供的模型名，`CODING_AGENT_MODEL_API_KEY` 用于 Bearer 认证。API key 只写入本机 `.env`，不要提交到 Git。`CODING_AGENT_MODEL_TIMEOUT_MS` 和 `CODING_AGENT_MODEL_MAX_RESPONSE_BYTES` 可选，但必须是正整数。完整 `.env` 配置代表对该模型服务的会话级授权；写入和命令执行仍会在交互式终端中请求确认，非 TTY 环境默认拒绝这些副作用。
 
 ## 目录结构
 
@@ -61,6 +62,7 @@ docs/
 - [工具安全与审批链路](docs/agent-flow-security.md)：manifest、capability、WorkspacePolicy、Approval 和 Fail Closed。
 - [模型与网络请求链路](docs/agent-flow-model-network.md)：运行配置、模型审批、transport 和 provider 转换。
 - [命令、测试与 Sandbox 链路](docs/agent-flow-sandbox-command.md)：结构化执行、Rust Helper、超时取消和隔离能力。
+- [核心 Agent 能力路线图](docs/core-agent-roadmap.md)：Sandbox V2、Responses、MCP、仓库上下文、任务闭环、恢复和 Skills 的开发计划。
 - [Run Diff 与工具输出链路](docs/agent-flow-diff-and-output.md)：工作区快照、unified diff 和 artifact 分页读取。
 - [兼容性记录](docs/compatibility-notes.md)：真实模型验收中观察到的协议兼容性结果。
 - [官方能力差距报告](docs/official-coding-agent-gap-analysis.md)：与 Claude Code、Codex CLI 的详细差距、证据和后续路线。

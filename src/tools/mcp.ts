@@ -119,7 +119,7 @@ export class McpStdioClient {
   private start(): void {
     if (this.child && this.child.exitCode === null) return;
     this.sandbox.assertAvailable(["process.spawn", "workspace.fs", "network.off", "os.isolation"]);
-    const child = this.sandbox.spawn({ workspaceRoot: this.config.workspaceRoot, executable: this.config.executable, args: this.config.args, cwd: this.config.cwd, env: this.config.env, timeoutMs: this.config.timeoutMs, maxStdoutBytes: this.config.maxMessageBytes, maxStderrBytes: this.config.maxMessageBytes, network: "off", stdio: ["pipe", "pipe", "pipe"] });
+    const child = this.sandbox.spawn({ executionId: crypto.randomUUID(), workspaceRoot: this.config.workspaceRoot, executable: this.config.executable, args: this.config.args, cwd: this.config.cwd, env: this.config.env, timeoutMs: this.config.timeoutMs, maxStdoutBytes: this.config.maxMessageBytes, maxStderrBytes: this.config.maxMessageBytes, network: "off", cpuTimeMs: this.config.timeoutMs, memoryBytes: 512 * 1024 * 1024, maxProcesses: 64, stdio: ["pipe", "pipe", "pipe"] });
     this.child = child;
     child.stdout?.on("data", (chunk: Buffer) => this.receive(chunk));
     child.stderr?.on("data", (chunk: Buffer) => { if (Buffer.byteLength(chunk) > this.config.maxMessageBytes) this.fail(new McpProtocolError("MCP stderr exceeds message limit")); });

@@ -14,9 +14,13 @@ export { ProcessSandboxBackend, RustHelperSandboxBackend, UnavailableSandboxBack
 export { createRunTestsTool } from "./tools/test-tools.ts";
 export { McpProtocolError, McpStdioClient, createMcpTools } from "./tools/mcp.ts";
 export { createWorkspaceTools } from "./tools/workspace-tools.ts";
+export { RepositoryInstructionLoader, formatRepositoryInstructions } from "./repository/instructions.ts";
+export { GitRepository, GitChangeTracker } from "./repository/git.ts";
+export { createRepositoryTools } from "./repository/tools.ts";
 export { ModelTransportError } from "./model/errors.ts";
 export { FetchHttpTransport } from "./model/transport.ts";
 export { OpenAICompatibleModel, OpenAICompatibleResponseError } from "./model/openai-compatible.ts";
+export { OpenAIResponsesModel, OpenAIResponsesResponseError } from "./model/openai-responses.ts";
 export { ApprovedModelClient, DefaultModelApprovalPolicy, ModelApprovalDeniedError } from "./model/approval.ts";
 export { createConfiguredModelClient, readModelRuntimeConfig } from "./model/runtime-config.ts";
 export { argsInputSchema, envInputSchema, pathInputSchema, singleLineTextSchema, stringWithoutNullByteSchema } from "./tools/tool-input-schemas.ts";
@@ -70,6 +74,7 @@ export type { ToolDefinition } from "./tools/tool-schema.ts";
 export type { ModelTransportErrorCode, ModelTransportErrorOptions } from "./model/errors.ts";
 export type { FetchHttpTransportOptions, FetchLike, HttpRequest, HttpResponse, HttpTransport } from "./model/transport.ts";
 export type { OpenAICompatibleModelOptions } from "./model/openai-compatible.ts";
+export type { OpenAIResponsesModelOptions } from "./model/openai-responses.ts";
 export type { ModelApprovalPolicy, ModelApprovalRequest } from "./model/approval.ts";
 export type { ModelRuntimeConfig, ModelRuntimeOptions, OpenAICompatibleRuntimeConfig } from "./model/runtime-config.ts";
 export type { PatchChange, PatchFileResult, PatchInput, PatchPreview, PatchResult } from "./tools/patch-tools.ts";
@@ -77,3 +82,5 @@ export type { RunCommandInput, RunCommandPreview, RunCommandResult, RunCommandTo
 export type { ExecutionRequest, SandboxBackend, SandboxCapabilities, SandboxCapability, SandboxSpawnRequest } from "./tools/sandbox.ts";
 export type { RunTestsInput, RunTestsPreview, RunTestsResult, RunTestsToolOptions } from "./tools/test-tools.ts";
 export type { McpStdioServerConfig, McpToolPreview, McpToolResult } from "./tools/mcp.ts";
+export type { RepositoryInstructionOptions, RepositoryInstructionSource, RepositoryInstructions } from "./repository/instructions.ts";
+export type { GitChangeReport, GitCommitPreview, GitFileState, GitFileStatus, GitStatusSummary } from "./repository/git.ts";

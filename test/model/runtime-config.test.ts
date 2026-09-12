@@ -22,6 +22,16 @@ test("leaves the CLI Echo mode available when no model configuration is present"
   assert.equal(readModelRuntimeConfig({}), undefined);
 });
 
+test("accepts only an explicit supported model protocol", () => {
+  const base = {
+    CODING_AGENT_MODEL_PROVIDER: "openai-compatible",
+    CODING_AGENT_MODEL_BASE_URL: "https://models.example/v1",
+    CODING_AGENT_MODEL: "free-model",
+  };
+  assert.equal(readModelRuntimeConfig({ ...base, CODING_AGENT_MODEL_PROTOCOL: "responses" })?.protocol, "responses");
+  assert.throws(() => readModelRuntimeConfig({ ...base, CODING_AGENT_MODEL_PROTOCOL: "guess" }), /must be chat-completions or responses/);
+});
+
 test("requires complete explicit model configuration", () => {
   assert.throws(
     () => readModelRuntimeConfig({ CODING_AGENT_MODEL_PROVIDER: "openai-compatible" }),
