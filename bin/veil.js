@@ -8,7 +8,8 @@ if (interactiveLaunch) {
 
 if (!process.execArgv.includes("--experimental-strip-types")) {
   const { spawnSync } = await import("node:child_process");
-  const result = spawnSync(process.execPath, ["--experimental-strip-types", import.meta.filename, ...process.argv.slice(2)], { stdio: "inherit" });
+  // SQLite 的实验性提示属于 Node 运行时噪声，会插入 veil> 提示符；真实异常仍通过 stderr 保留。
+  const result = spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", "--experimental-strip-types", import.meta.filename, ...process.argv.slice(2)], { stdio: "inherit" });
   process.exitCode = result.status ?? 1;
 } else {
   await import("../src/cli.ts").then(({ main }) => main());
