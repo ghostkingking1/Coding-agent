@@ -18,7 +18,7 @@ class FakeTransport implements HttpTransport {
   }
 }
 
-test("leaves the CLI Echo mode available when no model configuration is present", () => {
+test("returns no runtime configuration when model variables are absent", () => {
   assert.equal(readModelRuntimeConfig({}), undefined);
 });
 

@@ -26,7 +26,7 @@
     createRepositoryTools,
     type RepositoryInstructions,
   } from "./index.ts";
-  import { cleanupStaleBaselineDirectories, RunChangeTracker } from "./agent/run-diff.ts";
+  import { RunChangeTracker } from "./agent/run-diff.ts";
   import { Session } from "./agent/session.ts";
   import type { Readable, Writable } from "node:stream";
 
@@ -85,22 +85,26 @@
     for (const tool of repositoryTools) registry.register(tool);
   }
 
-  class EchoModel implements ModelClient {
-    readonly provider = "echo";
-    readonly model = "echo";
-    readonly capabilities = { toolCalling: false, streaming: false } as const;
+  /** 延迟创建真实模型，保证 veil 启动时先进入界面，配置错误只在提交请求后暴露。 */
+  class LazyConfiguredModel implements ModelClient {
+    readonly provider = "openai-compatible";
+    readonly model: string;
+    readonly capabilities = { toolCalling: true, streaming: false } as const;
+    private delegate?: ModelClient;
+    private readonly initialize: () => Promise<ModelClient>;
+
+    constructor(initialize: () => Promise<ModelClient>) {
+      this.initialize = initialize;
+      this.model = process.env.CODING_AGENT_MODEL?.trim() || "unconfigured";
+    }
 
     async generate(request: ModelRequest): Promise<ModelResponse> {
-      const prompt = request.messages.findLast((message) => message.role === "user")?.content ?? "";
-      return {
-        message: { role: "assistant", content: `Received: ${prompt}` },
-        finishReason: "stop",
-      };
+      this.delegate ??= await this.initialize();
+      return this.delegate.generate(request);
     }
   }
 
   export async function main(): Promise<void> {
-    await cleanupStaleBaselineDirectories();
     const args = process.argv.slice(2);
     if (args.includes("--help") || args.includes("-h")) {
       console.log("Usage: veil [request]");
@@ -125,19 +129,10 @@
       return;
     }
 
-    const config = readModelRuntimeConfig(process.env);
     const workspace = new WorkspacePolicy({ root: process.cwd() });
+    const config = readModelRuntimeConfig(process.env);
+    if (!config) throw new Error("No model configured. Set CODING_AGENT_MODEL_PROVIDER, CODING_AGENT_MODEL_BASE_URL, and CODING_AGENT_MODEL.");
     const repositoryContext = await loadRepositoryContext(workspace.root);
-    if (!config) {
-      const result = await new Agent(new EchoModel(), new ToolRegistry(), {
-        systemPrompt: createCodingSystemPrompt(process.cwd(), repositoryContext.instructions),
-        onEvent: writeRunEvent,
-        changeTracker: new RunChangeTracker({ root: workspace.root }),
-      }).run(input);
-      console.log(result.finalText);
-      printRunDiff(result.diff);
-      return;
-    }
 
     const prompt = createTerminalPrompt();
     try {
@@ -164,7 +159,7 @@
   }
 
   /** 无参数时启动持续对话；每行输入独立运行一次 Agent，并保留 Session 上下文。 */
-  export async function runInteractiveSession(options: { readonly session: Session; readonly root: string; readonly gitChangeTracker?: () => GitChangeTracker; readonly input?: Readable; readonly output?: Writable; readonly errorOutput?: Writable; readonly readline?: ReturnType<typeof createInterface> }): Promise<void> {
+  export async function runInteractiveSession(options: { readonly session: Session; readonly root: string; readonly gitChangeTracker?: () => GitChangeTracker; readonly input?: Readable; readonly output?: Writable; readonly errorOutput?: Writable; readonly readline?: ReturnType<typeof createInterface>; readonly initialPrompt?: boolean }): Promise<void> {
     const input = options.input ?? stdin;
     const output = options.output ?? stdout;
     const errorOutput = options.errorOutput ?? process.stderr;
@@ -172,11 +167,12 @@
     const sessionTracker = new RunChangeTracker({ root: options.root, sessionId: options.session.sessionId });
     // 单轮 tracker 跨 REPL 输入复用，因此每次 finish 都以此前 checkpoint 为基准。
     let runTracker = new RunChangeTracker({ root: options.root, sessionId: options.session.sessionId, reuseBaseline: true });
-    await sessionTracker.start();
     const ownsReadline = options.readline === undefined;
-    const readline = options.readline ?? createInterface({ input, output, prompt: "veil> ", terminal: Boolean((input as NodeJS.ReadStream).isTTY && (output as NodeJS.WriteStream).isTTY) });
+    let readline = options.readline;
+    await sessionTracker.start();
+    readline ??= createInterface({ input, output, prompt: "veil> ", terminal: Boolean((input as NodeJS.ReadStream).isTTY && (output as NodeJS.WriteStream).isTTY) });
     try {
-      if (readline.terminal) readline.prompt();
+      if (readline.terminal && options.initialPrompt !== false) readline.prompt();
       for await (const raw of readline) {
         const line = raw.trim();
         if (!line) { if (readline.terminal) readline.prompt(); continue; }
@@ -236,23 +232,31 @@
   }
 
   async function runConfiguredInteractiveSession(): Promise<void> {
-    const config = readModelRuntimeConfig(process.env);
     const workspace = new WorkspacePolicy({ root: process.cwd() });
-    const repositoryContext = await loadRepositoryContext(workspace.root);
-    if (!config) {
-      await runInteractiveSession({ session: new Session(new Agent(new EchoModel(), new ToolRegistry(), { systemPrompt: createCodingSystemPrompt(workspace.root, repositoryContext.instructions), onEvent: writeRunEvent })), root: workspace.root, gitChangeTracker: () => new GitChangeTracker(repositoryContext.repository) });
-      return;
-    }
-    // REPL 和审批问题共享一个 readline，避免两个终端监听器重复回显输入。
+    renderInteractiveScreen(workspace.root, stdout);
+    // 先建立 readline 和会话外壳；模型、仓库指令和配置均延迟到第一条真实请求。
+    stdout.write("veil> ");
     const readline = createInterface({ input: stdin, output: stdout, prompt: "veil> " });
     const prompt = createTerminalPrompt(readline);
+    const registry = new ToolRegistry(new SecurityPolicy({ approval: new DefaultApprovalPolicy((request) => prompt.confirmTool(request)) }));
+    registerCliTools(registry, workspace);
+    let repositoryContext: Awaited<ReturnType<typeof loadRepositoryContext>> | undefined;
+    const model = new LazyConfiguredModel(async () => {
+      const config = readModelRuntimeConfig(process.env);
+      if (!config) throw new Error("No model configured. Set CODING_AGENT_MODEL_PROVIDER, CODING_AGENT_MODEL_BASE_URL, and CODING_AGENT_MODEL before submitting a request.");
+      repositoryContext = await loadRepositoryContext(workspace.root);
+      for (const tool of createRepositoryTools(repositoryContext.instructions, repositoryContext.repository)) registry.register(tool);
+      return createConfiguredModelClient(config, { approval: new DefaultModelApprovalPolicy(() => true) });
+    });
+    const session = new Session(new Agent(model, registry, { systemPrompt: createCodingSystemPrompt(workspace.root), onEvent: writeRunEvent }));
     try {
-      // 模型服务由本机 .env 显式配置，CLI 将其视为会话级授权，不逐次打断用户。
-      const model = createConfiguredModelClient(config, { approval: new DefaultModelApprovalPolicy(() => true) });
-      const registry = new ToolRegistry(new SecurityPolicy({ approval: new DefaultApprovalPolicy((request) => prompt.confirmTool(request)) }));
-      registerCliTools(registry, workspace, undefined, createRepositoryTools(repositoryContext.instructions, repositoryContext.repository));
-      await runInteractiveSession({ session: new Session(new Agent(model, registry, { systemPrompt: createCodingSystemPrompt(workspace.root, repositoryContext.instructions), onEvent: writeRunEvent })), root: workspace.root, readline, gitChangeTracker: () => new GitChangeTracker(repositoryContext.repository) });
+      await runInteractiveSession({ session, root: workspace.root, readline, initialPrompt: false, gitChangeTracker: () => new GitChangeTracker(repositoryContext?.repository ?? new GitRepository(workspace.root) ) });
     } finally { prompt.close(); }
+  }
+
+  function renderInteractiveScreen(root: string, output: Writable): void {
+    if ((output as NodeJS.WriteStream).isTTY) output.write("\x1b[2J\x1b[H");
+    output.write(`veil\nWorkspace: ${root}\nType /help for commands.\n\n`);
   }
 
   /** CLI 必须在交互式终端中获得明确输入；非交互运行默认拒绝所有副作用。 */

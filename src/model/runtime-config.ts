@@ -33,7 +33,7 @@ export interface ModelRuntimeOptions {
 }
 
 /**
- * 从显式环境变量读取模型配置。没有任何模型变量时返回 undefined，以保留本地 Echo 演示。
+ * 从显式环境变量读取模型配置。没有任何模型变量时返回 undefined，由 CLI 在真实请求提交时给出配置提示。
  * 一旦用户开始配置模型，所有必填字段都必须存在，避免静默连到意外服务。
  */
 export function readModelRuntimeConfig(environment: Readonly<Record<string, string | undefined>>): ModelRuntimeConfig | undefined {

@@ -53,7 +53,7 @@
 - `FetchHttpTransport` 统一处理超时、取消、响应大小、HTTP 错误、网络错误和 JSON 解析。
 - `ApprovedModelClient` 确保每次可能上传对话或工具结果的模型请求先经过审批。
 - 通过 `.env` 显式配置 provider、base URL、模型和可选 API key。
-- 未配置模型时保持不联网的 Echo 演示模式。
+- `veil` 启动阶段不阻塞于模型配置；只有提交普通请求时才初始化真实模型，缺少配置会明确失败，不提供模拟降级。
 - CLI 只向模型注册读取、搜索、patch 和 `run_tests`；模型开始、工具请求、完成或失败会输出单行终端摘要。
 - 已用真实 OpenAI-compatible 模型在隔离仓库完成一次“读取 -> 修改 -> 测试失败 -> 修复 -> 测试通过”的验收，详见[兼容性记录](compatibility-notes.md)。
 - `Agent.run()` 会记录 patch 首次写入前的原始内容，并在运行结束时与最终文件内容比较，生成结构化文件变化和完整 unified diff；CLI 默认只展示文件数量及新增/删除行数，不直接展开 diff。

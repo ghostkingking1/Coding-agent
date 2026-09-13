@@ -37,7 +37,7 @@ Adapter 把内部 `Message` 映射为 provider message/input，把模型工具�
 
 ## 5. 关键决策
 
-- 没有任何模型环境变量：使用不联网的 EchoModel。
+- 没有任何模型环境变量：启动界面仍可进入；提交普通请求时明确提示缺少真实模型配置，不执行模拟请求。
 - 配置只填一部分或 provider 不支持：启动配置失败。
 - 模型请求可能上传代码或工具输出：每次请求都要求 Approval。
 - Approval 拒绝：不发起 HTTP 请求。

@@ -190,7 +190,7 @@ startRun
 
 ## 9. 设计原因
 
-- **模型与 Agent 分离**：统一 `ModelClient` 契约，使 EchoModel、OpenAI-compatible 模型和测试替身共享同一执行循环。
+- **模型与 Agent 分离**：统一 `ModelClient` 契约，使 OpenAI-compatible 模型和测试替身共享同一执行循环；生产 CLI 不再包含 EchoModel 模拟降级。
 - **完整 transcript 与模型视图分离**：压缩上下文不会破坏恢复、审计和工具调用关联所需的原始消息。
 - **工具统一进入 ToolRegistry**：把名称查找、输入校验和授权顺序固定下来，避免某个调用路径绕过安全策略。
 - **副作用先预览后审批**：用户可以在文件写入、命令执行前看到即将发生的操作，审批拒绝时没有副作用。
