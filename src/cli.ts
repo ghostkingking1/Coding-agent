@@ -173,12 +173,12 @@
     let runTracker = new RunChangeTracker({ root: options.root, sessionId: options.session.sessionId, reuseBaseline: true });
     await sessionTracker.start();
     const ownsReadline = options.readline === undefined;
-    const readline = options.readline ?? createInterface({ input, output, terminal: Boolean((input as NodeJS.ReadStream).isTTY && (output as NodeJS.WriteStream).isTTY) });
+    const readline = options.readline ?? createInterface({ input, output, prompt: "veil> ", terminal: Boolean((input as NodeJS.ReadStream).isTTY && (output as NodeJS.WriteStream).isTTY) });
     try {
-      if (readline.terminal) output.write("veil> ");
+      if (readline.terminal) readline.prompt();
       for await (const raw of readline) {
         const line = raw.trim();
-        if (!line) { if (readline.terminal) output.write("coding-agent> "); continue; }
+        if (!line) { if (readline.terminal) readline.prompt(); continue; }
         if (line === "exit" || line === "quit") break;
         try {
           const result = await options.session.run(line, { changeTracker: runTracker, gitChangeTracker: options.gitChangeTracker?.() });
@@ -192,7 +192,7 @@
           await runTracker.dispose();
           runTracker = new RunChangeTracker({ root: options.root, sessionId: options.session.sessionId, reuseBaseline: true });
         }
-        if (readline.terminal) output.write("veil> ");
+        if (readline.terminal) readline.prompt();
       }
     } finally {
       if (ownsReadline) readline.close();
@@ -218,7 +218,7 @@
       return;
     }
     // REPL 和审批问题共享一个 readline，避免两个终端监听器重复回显输入。
-    const readline = createInterface({ input: stdin, output: stdout });
+    const readline = createInterface({ input: stdin, output: stdout, prompt: "veil> " });
     const prompt = createTerminalPrompt(readline);
     try {
       // 模型服务由本机 .env 显式配置，CLI 将其视为会话级授权，不逐次打断用户。
