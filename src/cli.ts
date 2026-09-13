@@ -159,7 +159,7 @@
   }
 
   /** 无参数时启动持续对话；每行输入独立运行一次 Agent，并保留 Session 上下文。 */
-  export async function runInteractiveSession(options: { readonly session: Session; readonly root: string; readonly gitChangeTracker?: () => GitChangeTracker; readonly input?: Readable; readonly output?: Writable; readonly errorOutput?: Writable; readonly readline?: ReturnType<typeof createInterface>; readonly initialPrompt?: boolean }): Promise<void> {
+  export async function runInteractiveSession(options: { readonly session: Session; readonly root: string; readonly gitChangeTracker?: () => GitChangeTracker; readonly input?: Readable; readonly output?: Writable; readonly errorOutput?: Writable; readonly readline?: ReturnType<typeof createInterface>; readonly initialPrompt?: boolean; readonly beforeRequest?: () => string | undefined }): Promise<void> {
     const input = options.input ?? stdin;
     const output = options.output ?? stdout;
     const errorOutput = options.errorOutput ?? process.stderr;
@@ -193,6 +193,13 @@
           if (readline.terminal) readline.prompt();
           continue;
         }
+        const configurationError = options.beforeRequest?.();
+        if (configurationError) {
+          output.write(`[veil] request failed: ${configurationError}\n`);
+          if (readline.terminal) readline.prompt();
+          continue;
+        }
+        output.write("[veil] Thinking...\n");
         try {
           const result = await options.session.run(line, { changeTracker: runTracker, gitChangeTracker: options.gitChangeTracker?.() });
           output.write(`${result.finalText}\n`);
@@ -252,7 +259,21 @@
     });
     const session = new Session(new Agent(model, registry, { systemPrompt: createCodingSystemPrompt(workspace.root), onEvent: writeRunEvent }));
     try {
-      await runInteractiveSession({ session, root: workspace.root, readline, initialPrompt: false, gitChangeTracker: () => new GitChangeTracker(repositoryContext?.repository ?? new GitRepository(workspace.root) ) });
+      await runInteractiveSession({
+        session,
+        root: workspace.root,
+        readline,
+        initialPrompt: false,
+        beforeRequest: () => {
+          try {
+            if (!readModelRuntimeConfig(process.env)) return "No model configured. Set CODING_AGENT_MODEL_PROVIDER, CODING_AGENT_MODEL_BASE_URL, and CODING_AGENT_MODEL before submitting a request.";
+          } catch (error) {
+            return error instanceof Error ? error.message : String(error);
+          }
+          return undefined;
+        },
+        gitChangeTracker: () => new GitChangeTracker(repositoryContext?.repository ?? new GitRepository(workspace.root)),
+      });
     } finally { prompt.close(); }
   }
 
