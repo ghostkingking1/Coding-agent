@@ -1,4 +1,5 @@
 export { Agent } from "./agent/agent.ts";
+export { TaskStateMachine } from "./agent/task-state-machine.ts";
 export { DefaultContextManager, createDeterministicContextManager } from "./agent/context-manager.ts";
 export { ToolOutputStore } from "./agent/tool-output-store.ts";
 export { Session } from "./agent/session.ts";
@@ -61,6 +62,9 @@ export type {
   ToolExecutionPolicy,
   ToolInputSchema,
   ToolManifest,
+  TaskState,
+  VerificationPolicy,
+  VerificationSummary,
   ToolMessage,
   UserMessage,
   RunEvent,

@@ -73,6 +73,13 @@ export function createRunTestsTool(policy: WorkspacePolicy, options: RunTestsToo
     name: "run_tests",
     description: "Run an approved npm test script and return structured pass/fail output for repair loops.",
     capabilities: ["execute"],
+    verification: {
+      kind: "test",
+      isSuccessful: (result: unknown) => {
+        const value = result as Partial<RunTestsResult> | null;
+        return value?.status === "passed" && value?.passed === true;
+      },
+    },
     inputSchema: runTestsInputSchema,
     modelInputSchema: createRunTestsModelInputSchema(defaultScript, options.maxTimeoutMs ?? DEFAULT_MAX_COMMAND_TIMEOUT_MS),
     async preview(input, context) {

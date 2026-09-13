@@ -69,6 +69,8 @@
         return `[agent] finished after ${event.steps} step(s): ${event.stopReason}`;
       case "run_failed":
         return `[agent] run failed: ${event.error}`;
+      case "task_state_changed":
+        return `[agent] task state: ${event.from} -> ${event.to} (${event.reason})`;
     }
   }
 
@@ -147,6 +149,7 @@
 
       const result = await new Agent(model, registry, {
         systemPrompt: createCodingSystemPrompt(workspace.root, repositoryContext.instructions),
+        verification: { mode: "coding", maxRepairAttempts: 3 },
         onEvent: writeRunEvent,
         changeTracker: new RunChangeTracker({ root: workspace.root }),
       }).run(input, { gitChangeTracker: repositoryContext.tracker });
@@ -232,7 +235,16 @@
 
   function formatSessionStatus(session: Session): string {
     const result = session.result();
-    return `Session: ${result.sessionId}\nStatus: ${result.status}\nMessages: ${result.messages.length}\nRuns: ${result.runs.length}\n`;
+    const latest = result.runs.at(-1);
+    const verification = latest?.status === "completed" ? latest.verification : undefined;
+    return [
+      `Session: ${result.sessionId}`,
+      `Status: ${result.status}`,
+      `Messages: ${result.messages.length}`,
+      `Runs: ${result.runs.length}`,
+      ...(latest?.status === "completed" ? [`Task: ${latest.taskState}`, `Verification passed: ${verification?.verificationPassed ?? false}`, `Verification attempts: ${verification?.verificationAttempts ?? 0}`, `Repair attempts: ${verification?.repairAttempts ?? 0}`] : []),
+      "",
+    ].join("\n");
   }
 
   /** 只有输入输出同时连接终端时才允许无参数进入 REPL，避免管道进程永久等待。 */
@@ -257,7 +269,11 @@
       for (const tool of createRepositoryTools(repositoryContext.instructions, repositoryContext.repository)) registry.register(tool);
       return createConfiguredModelClient(config, { approval: new DefaultModelApprovalPolicy(() => true) });
     });
-    const session = new Session(new Agent(model, registry, { systemPrompt: createCodingSystemPrompt(workspace.root), onEvent: writeRunEvent }));
+    const session = new Session(new Agent(model, registry, {
+      systemPrompt: createCodingSystemPrompt(workspace.root),
+      verification: { mode: "coding", maxRepairAttempts: 3 },
+      onEvent: writeRunEvent,
+    }));
     try {
       await runInteractiveSession({
         session,
