@@ -87,6 +87,23 @@ test("interactive CLI supports TTY prompt and exits on exit", async () => {
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
+test("interactive CLI handles fixed slash commands without invoking the model", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "coding-agent-repl-"));
+  try {
+    let calls = 0;
+    const model: ModelClient = { provider: "fake", model: "fake", capabilities: { toolCalling: false, streaming: false }, async generate(): Promise<ModelResponse> { calls += 1; return { message: { role: "assistant", content: "unexpected" } }; } };
+    const chunks: string[] = [];
+    const output = new Writable({ write(chunk, _encoding, callback) { chunks.push(String(chunk)); callback(); } });
+    await runInteractiveSession({ session: new Session(new Agent(model, undefined, { includeRunDiff: false })), root, input: Readable.from(["/help\n", "/status\n", "/clear\n", "/model\n", "/quit\n"]), output });
+    const text = chunks.join("");
+    assert.match(text, /\/help/);
+    assert.match(text, /Status: active/);
+    assert.match(text, /Conversation cleared/);
+    assert.match(text, /Model: active session model/);
+    assert.equal(calls, 0);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
 test("CLI formats compact file change summaries without emitting the full diff", async () => {
   const summary = formatRunDiffSummary({
     sessionId: "session",

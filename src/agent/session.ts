@@ -98,6 +98,13 @@ export class Session {
     return [...this.runHistory];
   }
 
+  /** 清空当前对话上下文；不删除已持久化的运行记录。 */
+  clearContext(): void {
+    if (this.statusValue === "closed") throw new Error("Session is closed");
+    if (this.running) throw new Error("Session has a run in progress");
+    this.context = [];
+  }
+
   /** 显式续跑已中断 run；尚未完成的工具仍会经过原审批策略。 */
   async resume(): Promise<RunResult> {
     const pending = this.resumable;

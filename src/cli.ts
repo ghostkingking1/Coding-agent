@@ -107,6 +107,7 @@
       console.log("  veil                 Start interactive mode");
       console.log("  veil \"request\"       Run one request in the current workspace");
       console.log("  veil --version       Show version");
+      console.log("Interactive commands: /help /clear /status /model /resume /quit");
       return;
     }
     if (args.includes("--version") || args.includes("-v")) {
@@ -179,7 +180,23 @@
       for await (const raw of readline) {
         const line = raw.trim();
         if (!line) { if (readline.terminal) readline.prompt(); continue; }
-        if (line === "exit" || line === "quit") break;
+        if (line === "exit" || line === "quit" || line === "/quit" || line === "/exit") break;
+        if (line.startsWith("/")) {
+          const command = line.slice(1).trim().split(/\s+/, 1)[0]?.toLowerCase() ?? "";
+          if (command === "help") output.write(formatSlashHelp());
+          else if (command === "clear") { options.session.clearContext(); output.write("Conversation cleared.\n"); }
+          else if (command === "status") output.write(formatSessionStatus(options.session));
+          else if (command === "model") output.write("Model: active session model\n");
+          else if (command === "resume") {
+            try {
+              const resumed = await options.session.resume();
+              output.write(`${resumed.finalText}\n`);
+              printRunDiff(resumed.diff, output, errorOutput);
+            } catch (error) { errorOutput.write(`[agent] resume unavailable: ${error instanceof Error ? error.message : String(error)}\n`); }
+          } else output.write(`Unknown command: /${command}. Use /help.\n`);
+          if (readline.terminal) readline.prompt();
+          continue;
+        }
         try {
           const result = await options.session.run(line, { changeTracker: runTracker, gitChangeTracker: options.gitChangeTracker?.() });
           output.write(`${result.finalText}\n`);
@@ -202,6 +219,15 @@
       if (diff.files.length > 0) output.write(`\n${formatRunDiffSummary(diff)}\n`);
       if (!diff.complete) errorOutput.write(formatSnapshotWarning("session", diff));
     }
+  }
+
+  function formatSlashHelp(): string {
+    return ["Commands:", "  /help     Show available commands", "  /clear    Clear conversation context", "  /status   Show session status", "  /model    Show active model", "  /resume   Resume a recoverable run", "  /quit     Exit veil", ""].join("\n");
+  }
+
+  function formatSessionStatus(session: Session): string {
+    const result = session.result();
+    return `Session: ${result.sessionId}\nStatus: ${result.status}\nMessages: ${result.messages.length}\nRuns: ${result.runs.length}\n`;
   }
 
   /** 只有输入输出同时连接终端时才允许无参数进入 REPL，避免管道进程永久等待。 */
