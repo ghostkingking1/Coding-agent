@@ -199,7 +199,9 @@
           printRunDiff(result.diff, output, errorOutput);
           printGitChanges(result.gitChanges, errorOutput);
         } catch (error) {
-          // Agent 已通过 run_failed 事件输出模型或工具错误，避免在 REPL 中重复同一错误文本。
+          // 错误同时写入 REPL 输出和 stderr，避免 stderr 被终端/宿主吞掉后用户看不到配置失败。
+          const message = error instanceof Error ? error.message : String(error);
+          output.write(`[veil] request failed: ${message}\n`);
           errorOutput.write("[agent] request stopped; you can submit another request.\n");
           // 失败 run 的工作区状态不适合作为下一轮 checkpoint，重新建立基线。
           await runTracker.dispose();
