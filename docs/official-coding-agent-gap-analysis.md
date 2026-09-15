@@ -116,3 +116,9 @@
 ## 研究限制
 
 本报告不比较模型分数、速度、价格或第三方评测。官方页面正文存在访问限制时，只引用官方页面入口或官方仓库索引；实现前应在可访问环境复核安全策略默认值、平台差异和版本变化。
+
+### 远程 MCP Client（已实现）
+
+当前代码已补齐远程 MCP Client 的第一至第三阶段主要闭环：受限 Streamable HTTP、协议版本兼容、endpoint/origin 安全校验、Bearer/OAuth PKCE 凭据接口、用户级配置、bootstrap/工具审批、tools/resources/prompts 适配、分页和会话复用。远程 MCP 默认关闭，仓库内配置不自动发现；远程返回始终按不可信外部数据处理，凭据不写入 transcript 或审计内容。
+
+仍属于后续增强的项目级能力包括：平台密钥链集成、跨进程远程 session 恢复、真实第三方 Server 兼容性矩阵，以及更细粒度的运行时网络策略和 OAuth 浏览器自动化测试。`McpRemoteClient` 当前设计为进程内 session，进程重启后重新 initialize。
