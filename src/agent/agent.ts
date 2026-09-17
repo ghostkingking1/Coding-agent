@@ -87,6 +87,10 @@ export class Agent {
     if (!resumed && this.options.systemPrompt && !messages.some((message) => message.role === "system")) {
       messages.push({ role: "system", content: this.options.systemPrompt });
     }
+    if (!resumed && this.options.skillContext) {
+      const skillContext = await this.options.skillContext(input);
+      if (skillContext) messages.push({ role: "system", content: skillContext });
+    }
     if (!resumed) messages.push({ role: "user", content: input });
 
     const replayToolResults = new Map(runOptions.replayToolResults);

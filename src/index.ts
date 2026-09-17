@@ -22,6 +22,7 @@ export { createWorkspaceTools } from "./tools/workspace-tools.ts";
 export { RepositoryInstructionLoader, formatRepositoryInstructions } from "./repository/instructions.ts";
 export { GitRepository, GitChangeTracker } from "./repository/git.ts";
 export { createRepositoryTools } from "./repository/tools.ts";
+export { SkillCatalog, createSkillTools, createSkillDraft, createSkillWriteTool } from "./skill/index.ts";
 export { ModelTransportError } from "./model/errors.ts";
 export { FetchHttpTransport } from "./model/transport.ts";
 export { OpenAICompatibleModel, OpenAICompatibleResponseError } from "./model/openai-compatible.ts";
@@ -87,7 +88,12 @@ export type { ModelApprovalPolicy, ModelApprovalRequest } from "./model/approval
 export type { ModelRuntimeConfig, ModelRuntimeOptions, OpenAICompatibleRuntimeConfig } from "./model/runtime-config.ts";
 export type { PatchChange, PatchFileResult, PatchInput, PatchPreview, PatchResult } from "./tools/patch-tools.ts";
 export type { RunCommandInput, RunCommandPreview, RunCommandResult, RunCommandToolOptions } from "./tools/command-tools.ts";
-export type { ExecutionRequest, SandboxBackend, SandboxCapabilities, SandboxCapability, SandboxSpawnRequest } from "./tools/sandbox.ts";
+export type { ExecutionRequest, ExecutionNetworkPolicy, ExecutionNetworkPolicyInput, SandboxBackend, SandboxCapabilities, SandboxCapability, SandboxSpawnRequest } from "./tools/sandbox.ts";
+export { ControlledNetworkProxy } from "./tools/network-proxy.ts";
+export { createManagedNetworkCommandTool } from "./tools/network-command.ts";
+export type { ControlledNetworkProxyOptions, NetworkProxyEvent, NetworkProxyLimits, NetworkTargetPolicy } from "./tools/network-proxy.ts";
+export type { ManagedNetworkCommandOptions, ManagedNetworkCommandTool } from "./tools/network-command.ts";
+export type { NetworkPolicy, PolicyDecision, RiskClass, SandboxPolicy } from "./tools/sandbox-policy.ts";
 export type { RunTestsInput, RunTestsPreview, RunTestsResult, RunTestsToolOptions } from "./tools/test-tools.ts";
 export type { McpStdioServerConfig, McpToolPreview, McpToolResult } from "./tools/mcp.ts";
 export type { McpClient, McpListedTool, McpResource, McpResourceResult, McpPrompt, McpPromptResult } from "./tools/mcp-types.ts";
@@ -96,4 +102,5 @@ export type { McpBootstrapRequest, McpRuntimeOptions, McpRuntimeServerStatus } f
 export type { OAuthCredential, CredentialStore, OAuthAuthorizationServerMetadata, OAuthProtectedResourceMetadata, BrowserLauncher, OAuthLoginOptions, OAuthTokenResponse } from "./tools/mcp-auth.ts";
 export type { McpConfigFile, McpConfigLoadOptions } from "./tools/mcp-config.ts";
 export type { RepositoryInstructionOptions, RepositoryInstructionSource, RepositoryInstructions } from "./repository/instructions.ts";
+export type { SkillCatalogOptions, SkillCatalogLike, SkillDescriptor, SkillDraft, SkillMatch, SkillManifest, SkillResource, SkillSource, LoadedSkill, SkillCaptureInput } from "./skill/index.ts";
 export type { GitChangeReport, GitCommitPreview, GitFileState, GitFileStatus, GitStatusSummary } from "./repository/git.ts";

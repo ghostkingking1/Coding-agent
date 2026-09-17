@@ -11,6 +11,23 @@ use std::process::Stdio;
 const PROTOCOL_VERSION: &str = "1";
 
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(tag = "mode", rename_all = "lowercase")]
+enum NetworkPolicy {
+    Off,
+    Loopback { ports: Vec<u16> },
+    Allowlist {
+        hosts: Vec<String>,
+        ports: Vec<u16>,
+        #[serde(rename = "proxyId")]
+        proxy_id: String,
+        #[serde(rename = "proxyHost")]
+        proxy_host: String,
+        #[serde(rename = "proxyPort")]
+        proxy_port: u16,
+    },
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 struct ExecutionRequest {
     execution_id: String,
     workspace_root: String,
@@ -21,7 +38,7 @@ struct ExecutionRequest {
     timeout_ms: u64,
     max_stdout_bytes: u64,
     max_stderr_bytes: u64,
-    network: String,
+    network: NetworkPolicy,
     #[serde(default)]
     cpu_time_ms: u64,
     #[serde(default)]
@@ -52,6 +69,7 @@ fn capabilities() -> Result<(), String> {
         "process.spawn",
         "process-tree",
         "workspace.fs",
+        "filesystem.workspace_write",
         "protocol.v1",
         "resource.limits",
     ];
@@ -74,6 +92,14 @@ fn capabilities() -> Result<(), String> {
         values.push("hardening.appcontainer");
         values.push("hardening.handle_whitelist");
         values.push("hardening.restricted_token");
+        values.push("hardening.explicit_environment");
+        values.push("hardening.job_object");
+        values.push("hardening.acl_recovery_journal");
+        if windows_network_isolation_available() {
+            values.push("network.loopback");
+            values.push("network.proxy");
+            values.push("network.allowlist");
+        }
     }
     println!(
         "{}",
@@ -160,8 +186,9 @@ fn execute_windows(request: &ExecutionRequest) -> Result<(), String> {
         CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
     };
     use windows_sys::Win32::Security::{
-        CreateRestrictedToken, DISABLE_MAX_PRIVILEGE, SECURITY_CAPABILITIES, SID_AND_ATTRIBUTES,
-        TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_QUERY,
+        CreateRestrictedToken, CreateWellKnownSid, DISABLE_MAX_PRIVILEGE, SECURITY_CAPABILITIES,
+        SECURITY_MAX_SID_SIZE, SID_AND_ATTRIBUTES, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE,
+        TOKEN_QUERY, WinCapabilityInternetClientSid,
     };
     use windows_sys::Win32::System::Console::{
         GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
@@ -177,6 +204,11 @@ fn execute_windows(request: &ExecutionRequest) -> Result<(), String> {
         EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION,
         PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, STARTF_USESTDHANDLES, STARTUPINFOEXW,
     };
+
+    // Helper 启动前先处理上一次异常退出留下的 ACL journal；无法证明当前 ACL
+    // 仍是本 Helper 写入的版本时直接拒绝，避免把用户后续权限修改覆盖掉。
+    recover_acl_journals()?;
+    recover_loopback_journals()?;
 
     // 每次执行使用独立 AppContainer 身份，避免不同 Agent run 共享权限与残留状态。
     let profile_name = format!(
@@ -206,7 +238,42 @@ fn execute_windows(request: &ExecutionRequest) -> Result<(), String> {
             ));
         }
     }
-    let workspace_acl = WorkspaceAclGrant::grant(&request.workspace_root, sid)?;
+    let workspace_acl = WorkspaceAclGrant::grant(&request.workspace_root, sid, &request.execution_id)?;
+    // 联网 capability 只负责让 AppContainer 网络栈可用；真正的目标约束由同一 SID
+    // 上的 WFP 动态过滤器承担。任一守卫安装失败都发生在目标创建/恢复之前。
+    let mut internet_capability_sid = vec![0u8; SECURITY_MAX_SID_SIZE as usize];
+    let mut internet_capability_size = internet_capability_sid.len() as u32;
+    let network_requested = !matches!(request.network, NetworkPolicy::Off);
+    if network_requested
+        && unsafe {
+            CreateWellKnownSid(
+                WinCapabilityInternetClientSid,
+                null_mut(),
+                internet_capability_sid.as_mut_ptr() as *mut _,
+                &mut internet_capability_size,
+            )
+        } == 0
+    {
+        return Err("failed to create AppContainer internet capability SID".to_string());
+    }
+    let mut capability = SID_AND_ATTRIBUTES {
+        Sid: if network_requested {
+            internet_capability_sid.as_mut_ptr() as *mut _
+        } else {
+            null_mut()
+        },
+        Attributes: 0,
+    };
+    let loopback_guard = if network_requested {
+        Some(AppContainerLoopbackGuard::install(sid, &request.execution_id)?)
+    } else {
+        None
+    };
+    let network_guard = if network_requested {
+        Some(WindowsNetworkGuard::install(sid, &request.network)?)
+    } else {
+        None
+    };
     // 先建立并配置 Job，再以挂起状态创建目标。这样目标没有机会在被纳入 Job 前派生逃逸子进程。
     let job = unsafe { CreateJobObjectW(null_mut(), null()) };
     if job.is_null() {
@@ -283,8 +350,12 @@ fn execute_windows(request: &ExecutionRequest) -> Result<(), String> {
     }
     let security = SECURITY_CAPABILITIES {
         AppContainerSid: sid,
-        Capabilities: null_mut::<SID_AND_ATTRIBUTES>(),
-        CapabilityCount: 0,
+        Capabilities: if network_requested {
+            &mut capability
+        } else {
+            null_mut::<SID_AND_ATTRIBUTES>()
+        },
+        CapabilityCount: u32::from(network_requested),
         Reserved: 0,
     };
     if unsafe {
@@ -411,6 +482,9 @@ fn execute_windows(request: &ExecutionRequest) -> Result<(), String> {
         let _ = GetExitCodeProcess(info.hProcess, &mut exit_code);
         CloseHandle(info.hProcess);
         CloseHandle(job);
+        // std::process::exit 不运行析构；先关闭 WFP 动态会话并撤销回环 exemption。
+        drop(network_guard);
+        drop(loopback_guard);
         // std::process::exit 不会执行 Drop；必须先同步恢复所有 workspace DACL。
         drop(workspace_acl);
         // 进程和临时 ACL 均已清理后再删除 profile；删除失败不影响已结束的执行结果。
@@ -457,16 +531,408 @@ struct WorkspaceAclEntry {
     path: Vec<u16>,
     original: *mut windows_sys::Win32::Security::ACL,
     descriptor: windows_sys::Win32::Security::PSECURITY_DESCRIPTOR,
+    journal_path: std::path::PathBuf,
+}
+
+/**
+ * AppContainer 的宿主回环访问由系统级 exemption 列表控制。这里只追加本次 SID，
+ * Drop 时重新读取并仅移除自己追加的项，避免覆盖执行期间其他进程的合法修改。
+ */
+#[cfg(target_os = "windows")]
+struct AppContainerLoopbackGuard {
+    sid: Vec<u8>,
+    added: bool,
+    journal_path: Option<std::path::PathBuf>,
+}
+
+#[cfg(target_os = "windows")]
+impl AppContainerLoopbackGuard {
+    fn install(
+        sid: windows_sys::Win32::Security::PSID,
+        execution_id: &str,
+    ) -> Result<Self, String> {
+        let sid = copy_windows_sid(sid)?;
+        let current = read_loopback_exemptions()?;
+        if current.iter().any(|entry| windows_sid_eq(entry, &sid)) {
+            return Ok(Self { sid, added: false, journal_path: None });
+        }
+        let mut updated = current;
+        updated.push(sid.clone());
+        let journal_path = write_loopback_journal(execution_id, &sid)?;
+        if let Err(error) = write_loopback_exemptions(&mut updated) {
+            let _ = std::fs::remove_file(&journal_path);
+            return Err(error);
+        }
+        Ok(Self { sid, added: true, journal_path: Some(journal_path) })
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for AppContainerLoopbackGuard {
+    fn drop(&mut self) {
+        if !self.added {
+            return;
+        }
+        if let Ok(mut current) = read_loopback_exemptions() {
+            current.retain(|entry| !windows_sid_eq(entry, &self.sid));
+            if write_loopback_exemptions(&mut current).is_ok() {
+                if let Some(path) = &self.journal_path {
+                    let _ = std::fs::remove_file(path);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Debug, Deserialize, Serialize)]
+struct LoopbackJournal {
+    sid: String,
+}
+
+#[cfg(target_os = "windows")]
+fn loopback_journal_dir() -> std::path::PathBuf {
+    std::env::temp_dir().join("coding-agent-sandbox-loopback-journal")
+}
+
+#[cfg(target_os = "windows")]
+fn write_loopback_journal(
+    execution_id: &str,
+    sid: &[u8],
+) -> Result<std::path::PathBuf, String> {
+    use std::hash::{Hash, Hasher};
+    use std::io::Write;
+    let directory = loopback_journal_dir();
+    std::fs::create_dir_all(&directory)
+        .map_err(|_| "failed to create loopback recovery journal directory".to_string())?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    execution_id.hash(&mut hasher);
+    sid.hash(&mut hasher);
+    let target = directory.join(format!("loopback-{:016x}.json", hasher.finish()));
+    let temporary = target.with_extension("tmp");
+    let bytes = serde_json::to_vec(&LoopbackJournal { sid: STANDARD.encode(sid) })
+        .map_err(|_| "failed to encode loopback recovery journal".to_string())?;
+    let mut file = std::fs::File::create(&temporary)
+        .map_err(|_| "failed to write loopback recovery journal".to_string())?;
+    file.write_all(&bytes)
+        .and_then(|_| file.sync_all())
+        .map_err(|_| "failed to flush loopback recovery journal".to_string())?;
+    std::fs::rename(&temporary, &target)
+        .map_err(|_| "failed to commit loopback recovery journal".to_string())?;
+    Ok(target)
+}
+
+#[cfg(target_os = "windows")]
+fn recover_loopback_journals() -> Result<(), String> {
+    let directory = loopback_journal_dir();
+    let items = match std::fs::read_dir(&directory) {
+        Ok(items) => items,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err("cannot inspect loopback recovery journal".to_string()),
+    };
+    for item in items {
+        let item = item.map_err(|_| "cannot inspect loopback recovery journal".to_string())?;
+        if item.path().extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let journal: LoopbackJournal = serde_json::from_slice(
+            &std::fs::read(item.path())
+                .map_err(|_| "cannot read loopback recovery journal".to_string())?,
+        )
+        .map_err(|_| "invalid loopback recovery journal; refusing to execute".to_string())?;
+        let sid = STANDARD
+            .decode(journal.sid)
+            .map_err(|_| "invalid SID in loopback recovery journal".to_string())?;
+        let mut current = read_loopback_exemptions()?;
+        current.retain(|entry| !windows_sid_eq(entry, &sid));
+        write_loopback_exemptions(&mut current)?;
+        std::fs::remove_file(item.path())
+            .map_err(|_| "failed to remove recovered loopback journal".to_string())?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn copy_windows_sid(sid: windows_sys::Win32::Security::PSID) -> Result<Vec<u8>, String> {
+    use windows_sys::Win32::Security::{CopySid, GetLengthSid};
+    let length = unsafe { GetLengthSid(sid) };
+    if length == 0 {
+        return Err("invalid AppContainer SID".to_string());
+    }
+    let mut copy = vec![0u8; length as usize];
+    if unsafe { CopySid(length, copy.as_mut_ptr() as *mut _, sid) } == 0 {
+        return Err("failed to copy AppContainer SID".to_string());
+    }
+    Ok(copy)
+}
+
+#[cfg(target_os = "windows")]
+fn windows_sid_eq(left: &[u8], right: &[u8]) -> bool {
+    use windows_sys::Win32::Security::EqualSid;
+    unsafe {
+        EqualSid(
+            left.as_ptr() as *mut _,
+            right.as_ptr() as *mut _,
+        ) != 0
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn read_loopback_exemptions() -> Result<Vec<Vec<u8>>, String> {
+    use std::ptr::null_mut;
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::NetworkManagement::WindowsFirewall::NetworkIsolationGetAppContainerConfig;
+    use windows_sys::Win32::Security::SID_AND_ATTRIBUTES;
+    let mut count = 0u32;
+    let mut entries: *mut SID_AND_ATTRIBUTES = null_mut();
+    let status = unsafe { NetworkIsolationGetAppContainerConfig(&mut count, &mut entries) };
+    if status != 0 {
+        return Err(format!("failed to read AppContainer loopback config: {status}"));
+    }
+    let result = if count == 0 || entries.is_null() {
+        Vec::new()
+    } else {
+        let slice = unsafe { std::slice::from_raw_parts(entries, count as usize) };
+        let mut result = Vec::with_capacity(slice.len());
+        for entry in slice {
+            result.push(copy_windows_sid(entry.Sid)?);
+        }
+        result
+    };
+    if !entries.is_null() {
+        unsafe { LocalFree(entries as *mut _) };
+    }
+    Ok(result)
+}
+
+#[cfg(target_os = "windows")]
+fn write_loopback_exemptions(entries: &mut [Vec<u8>]) -> Result<(), String> {
+    use windows_sys::Win32::NetworkManagement::WindowsFirewall::NetworkIsolationSetAppContainerConfig;
+    use windows_sys::Win32::Security::SID_AND_ATTRIBUTES;
+    let native = entries
+        .iter_mut()
+        .map(|sid| SID_AND_ATTRIBUTES {
+            Sid: sid.as_mut_ptr() as *mut _,
+            Attributes: 0,
+        })
+        .collect::<Vec<_>>();
+    let status = unsafe {
+        NetworkIsolationSetAppContainerConfig(
+            native.len() as u32,
+            if native.is_empty() {
+                std::ptr::null()
+            } else {
+                native.as_ptr()
+            },
+        )
+    };
+    if status != 0 {
+        return Err(format!("failed to update AppContainer loopback config: {status}"));
+    }
+    Ok(())
+}
+
+/** WFP 动态会话关闭时由 BFE 原子删除全部过滤器，Helper 崩溃也不会遗留规则。 */
+#[cfg(target_os = "windows")]
+struct WindowsNetworkGuard {
+    engine: windows_sys::Win32::Foundation::HANDLE,
+}
+
+#[cfg(target_os = "windows")]
+impl WindowsNetworkGuard {
+    fn install(
+        appcontainer_sid: windows_sys::Win32::Security::PSID,
+        policy: &NetworkPolicy,
+    ) -> Result<Self, String> {
+        use std::ptr::{null, null_mut};
+        use windows_sys::Win32::NetworkManagement::WindowsFilteringPlatform::{
+            FwpmEngineOpen0, FwpmSubLayerAdd0, FwpmTransactionAbort0,
+            FwpmTransactionBegin0, FwpmTransactionCommit0, FWPM_SESSION0,
+            FWPM_SESSION_FLAG_DYNAMIC, FWPM_SUBLAYER0,
+        };
+        use windows_sys::Win32::System::Rpc::{UuidCreate, RPC_C_AUTHN_WINNT};
+        let mut session = FWPM_SESSION0::default();
+        session.flags = FWPM_SESSION_FLAG_DYNAMIC;
+        let mut engine = null_mut();
+        let status = unsafe {
+            FwpmEngineOpen0(null(), RPC_C_AUTHN_WINNT, null(), &session, &mut engine)
+        };
+        if status != 0 || engine.is_null() {
+            return Err(format!("failed to open dynamic WFP session: {status}"));
+        }
+        let guard = Self { engine };
+        let begin = unsafe { FwpmTransactionBegin0(engine, 0) };
+        if begin != 0 {
+            return Err(format!("failed to begin WFP transaction: {begin}"));
+        }
+        let mut sublayer_key = windows_sys::core::GUID::from_u128(0);
+        let uuid_status = unsafe { UuidCreate(&mut sublayer_key) };
+        if uuid_status != 0 && uuid_status != 1824 {
+            unsafe { FwpmTransactionAbort0(engine) };
+            return Err(format!("failed to create WFP sublayer identity: {uuid_status}"));
+        }
+        let mut sublayer = FWPM_SUBLAYER0::default();
+        sublayer.subLayerKey = sublayer_key;
+        sublayer.weight = u16::MAX;
+        let sublayer_status = unsafe { FwpmSubLayerAdd0(engine, &sublayer, null_mut()) };
+        if sublayer_status != 0 {
+            unsafe { FwpmTransactionAbort0(engine) };
+            return Err(format!("failed to add WFP sandbox sublayer: {sublayer_status}"));
+        }
+        let installed = install_windows_network_filters(
+            engine,
+            appcontainer_sid,
+            &sublayer_key,
+            policy,
+        );
+        if let Err(error) = installed {
+            unsafe { FwpmTransactionAbort0(engine) };
+            return Err(error);
+        }
+        let commit = unsafe { FwpmTransactionCommit0(engine) };
+        if commit != 0 {
+            unsafe { FwpmTransactionAbort0(engine) };
+            return Err(format!("failed to commit WFP transaction: {commit}"));
+        }
+        Ok(guard)
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for WindowsNetworkGuard {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::NetworkManagement::WindowsFilteringPlatform::FwpmEngineClose0(
+                self.engine,
+            );
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn install_windows_network_filters(
+    engine: windows_sys::Win32::Foundation::HANDLE,
+    sid: windows_sys::Win32::Security::PSID,
+    sublayer_key: &windows_sys::core::GUID,
+    policy: &NetworkPolicy,
+) -> Result<(), String> {
+    let targets = match policy {
+        NetworkPolicy::Off => return Err("network guard cannot install an off policy".to_string()),
+        NetworkPolicy::Loopback { ports } => ports
+            .iter()
+            .flat_map(|port| [(false, *port), (true, *port)])
+            .collect::<Vec<_>>(),
+        NetworkPolicy::Allowlist { proxy_host, proxy_port, .. } => {
+            vec![(proxy_host == "::1", *proxy_port)]
+        }
+    };
+    for (ipv6, port) in targets {
+        add_windows_network_filter(engine, sid, sublayer_key, ipv6, Some(port), true)?;
+    }
+    // Permit 使用更高权重；随后按 package SID 阻断其余所有 IPv4/IPv6 出站。
+    add_windows_network_filter(engine, sid, sublayer_key, false, None, false)?;
+    add_windows_network_filter(engine, sid, sublayer_key, true, None, false)?;
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn add_windows_network_filter(
+    engine: windows_sys::Win32::Foundation::HANDLE,
+    sid: windows_sys::Win32::Security::PSID,
+    sublayer_key: &windows_sys::core::GUID,
+    ipv6: bool,
+    port: Option<u16>,
+    permit: bool,
+) -> Result<(), String> {
+    use windows_sys::Win32::NetworkManagement::WindowsFilteringPlatform::*;
+    let mut v6_loopback = FWP_BYTE_ARRAY16 {
+        byteArray16: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+    };
+    let mut conditions = vec![FWPM_FILTER_CONDITION0 {
+        fieldKey: FWPM_CONDITION_ALE_PACKAGE_ID,
+        matchType: FWP_MATCH_EQUAL,
+        conditionValue: FWP_CONDITION_VALUE0 {
+            r#type: FWP_SID,
+            Anonymous: FWP_CONDITION_VALUE0_0 { sid: sid as *mut _ },
+        },
+    }];
+    if let Some(port) = port {
+        conditions.push(FWPM_FILTER_CONDITION0 {
+            fieldKey: FWPM_CONDITION_IP_PROTOCOL,
+            matchType: FWP_MATCH_EQUAL,
+            conditionValue: FWP_CONDITION_VALUE0 {
+                r#type: FWP_UINT8,
+                Anonymous: FWP_CONDITION_VALUE0_0 { uint8: 6 },
+            },
+        });
+        conditions.push(FWPM_FILTER_CONDITION0 {
+            fieldKey: FWPM_CONDITION_IP_REMOTE_ADDRESS,
+            matchType: FWP_MATCH_EQUAL,
+            conditionValue: if ipv6 {
+                FWP_CONDITION_VALUE0 {
+                    r#type: FWP_BYTE_ARRAY16_TYPE,
+                    Anonymous: FWP_CONDITION_VALUE0_0 {
+                        byteArray16: &mut v6_loopback,
+                    },
+                }
+            } else {
+                FWP_CONDITION_VALUE0 {
+                    r#type: FWP_UINT32,
+                    Anonymous: FWP_CONDITION_VALUE0_0 {
+                        uint32: u32::from_be_bytes([127, 0, 0, 1]),
+                    },
+                }
+            },
+        });
+        conditions.push(FWPM_FILTER_CONDITION0 {
+            fieldKey: FWPM_CONDITION_IP_REMOTE_PORT,
+            matchType: FWP_MATCH_EQUAL,
+            conditionValue: FWP_CONDITION_VALUE0 {
+                r#type: FWP_UINT16,
+                Anonymous: FWP_CONDITION_VALUE0_0 { uint16: port },
+            },
+        });
+    }
+    let mut filter = FWPM_FILTER0::default();
+    filter.layerKey = if ipv6 {
+        FWPM_LAYER_ALE_AUTH_CONNECT_V6
+    } else {
+        FWPM_LAYER_ALE_AUTH_CONNECT_V4
+    };
+    filter.subLayerKey = *sublayer_key;
+    filter.weight = FWP_VALUE0 {
+        r#type: FWP_UINT8,
+        Anonymous: FWP_VALUE0_0 {
+            uint8: if permit { 15 } else { 14 },
+        },
+    };
+    filter.numFilterConditions = conditions.len() as u32;
+    filter.filterCondition = conditions.as_mut_ptr();
+    filter.action.r#type = if permit { FWP_ACTION_PERMIT } else { FWP_ACTION_BLOCK };
+    let mut id = 0u64;
+    let status = unsafe { FwpmFilterAdd0(engine, &filter, std::ptr::null_mut(), &mut id) };
+    if status != 0 {
+        return Err(format!("failed to add WFP sandbox filter: {status}"));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Debug, Deserialize, Serialize)]
+struct AclJournal {
+    path: String,
+    original_acl: String,
+    expected_acl: String,
 }
 
 #[cfg(target_os = "windows")]
 impl WorkspaceAclGrant {
-    fn grant(root: &str, sid: *mut core::ffi::c_void) -> Result<Self, String> {
+    fn grant(root: &str, sid: *mut core::ffi::c_void, execution_id: &str) -> Result<Self, String> {
         let mut paths = vec![std::path::PathBuf::from(root)];
         collect_workspace_acl_paths(std::path::Path::new(root), &mut paths)?;
         let mut entries = Vec::with_capacity(paths.len());
         for path in paths {
-            match WorkspaceAclEntry::grant(&path, sid) {
+            match WorkspaceAclEntry::grant(&path, sid, execution_id) {
                 Ok(entry) => entries.push(entry),
                 Err(error) => {
                     // 部分授权也必须立即回滚，避免 Helper 失败后扩大 AppContainer 权限。
@@ -481,7 +947,7 @@ impl WorkspaceAclGrant {
 
 #[cfg(target_os = "windows")]
 impl WorkspaceAclEntry {
-    fn grant(root: &std::path::Path, sid: *mut core::ffi::c_void) -> Result<Self, String> {
+    fn grant(root: &std::path::Path, sid: *mut core::ffi::c_void, execution_id: &str) -> Result<Self, String> {
         use windows_sys::Win32::Storage::FileSystem::{
             FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
         };
@@ -489,6 +955,7 @@ impl WorkspaceAclEntry {
             root,
             sid,
             FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE,
+            execution_id,
         )
     }
 
@@ -496,6 +963,7 @@ impl WorkspaceAclEntry {
         root: &std::path::Path,
         sid: *mut core::ffi::c_void,
         permissions: u32,
+        execution_id: &str,
     ) -> Result<Self, String> {
         use windows_sys::Win32::Foundation::LocalFree;
         use windows_sys::Win32::Security::Authorization::{
@@ -544,6 +1012,14 @@ impl WorkspaceAclEntry {
             }
             return Err(format!("failed to build workspace DACL: {add}"));
         }
+        let original_bytes = acl_bytes(old_acl)?;
+        let expected_bytes = acl_bytes(new_acl)?;
+        let journal_path = write_acl_journal(
+            execution_id,
+            &root.to_string_lossy(),
+            &original_bytes,
+            &expected_bytes,
+        )?;
         let set = unsafe {
             SetNamedSecurityInfoW(
                 path.as_ptr(),
@@ -562,6 +1038,7 @@ impl WorkspaceAclEntry {
             unsafe {
                 LocalFree(descriptor as *mut _);
             }
+            let _ = std::fs::remove_file(&journal_path);
             return Err(format!(
                 "failed to grant workspace access for {}: {set}",
                 root.display()
@@ -571,6 +1048,7 @@ impl WorkspaceAclEntry {
             path,
             original: old_acl,
             descriptor,
+            journal_path,
         })
     }
 }
@@ -593,7 +1071,145 @@ impl Drop for WorkspaceAclEntry {
             );
             LocalFree(self.descriptor as *mut _);
         }
+        // 恢复失败时保留 journal，下一次 Helper 启动会再次尝试；成功则删除它。
+        let _ = std::fs::remove_file(&self.journal_path);
     }
+}
+
+#[cfg(target_os = "windows")]
+fn acl_bytes(acl: *mut windows_sys::Win32::Security::ACL) -> Result<Vec<u8>, String> {
+    if acl.is_null() {
+        return Ok(Vec::new());
+    }
+    let size = unsafe { (*acl).AclSize as usize };
+    if size == 0 || size > 16 * 1024 * 1024 {
+        return Err("workspace DACL has an invalid size".to_string());
+    }
+    Ok(unsafe { std::slice::from_raw_parts(acl as *const u8, size) }.to_vec())
+}
+
+#[cfg(target_os = "windows")]
+fn acl_journal_dir() -> std::path::PathBuf {
+    std::env::temp_dir().join("coding-agent-sandbox-acl-journal")
+}
+
+#[cfg(target_os = "windows")]
+fn journal_file_name(execution_id: &str, path: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    execution_id.hash(&mut hasher);
+    path.hash(&mut hasher);
+    format!("acl-{:016x}.json", hasher.finish())
+}
+
+#[cfg(target_os = "windows")]
+fn write_acl_journal(
+    execution_id: &str,
+    path: &str,
+    original: &[u8],
+    expected: &[u8],
+) -> Result<std::path::PathBuf, String> {
+    let directory = acl_journal_dir();
+    std::fs::create_dir_all(&directory)
+        .map_err(|_| "failed to create ACL recovery journal directory".to_string())?;
+    let target = directory.join(journal_file_name(execution_id, path));
+    let temporary = target.with_extension("tmp");
+    let journal = AclJournal {
+        path: path.to_string(),
+        original_acl: STANDARD.encode(original),
+        expected_acl: STANDARD.encode(expected),
+    };
+    let bytes = serde_json::to_vec(&journal)
+        .map_err(|_| "failed to encode ACL recovery journal".to_string())?;
+    use std::io::Write;
+    let mut file = std::fs::File::create(&temporary)
+        .map_err(|_| "failed to write ACL recovery journal".to_string())?;
+    file.write_all(&bytes)
+        .and_then(|_| file.sync_all())
+        .map_err(|_| "failed to flush ACL recovery journal".to_string())?;
+    std::fs::rename(&temporary, &target)
+        .map_err(|_| "failed to commit ACL recovery journal".to_string())?;
+    Ok(target)
+}
+
+#[cfg(target_os = "windows")]
+fn recover_acl_journals() -> Result<(), String> {
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::{
+        GetNamedSecurityInfoW, SetNamedSecurityInfoW, SE_FILE_OBJECT,
+    };
+    use windows_sys::Win32::Security::{ACL, DACL_SECURITY_INFORMATION};
+
+    let directory = acl_journal_dir();
+    let entries = match std::fs::read_dir(&directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err("cannot inspect ACL recovery journal".to_string()),
+    };
+    for item in entries {
+        let item = item.map_err(|_| "cannot inspect ACL recovery journal".to_string())?;
+        if item.path().extension().and_then(|v| v.to_str()) != Some("json") {
+            continue;
+        }
+        let journal: AclJournal = serde_json::from_slice(
+            &std::fs::read(item.path()).map_err(|_| "cannot read ACL recovery journal".to_string())?,
+        )
+        .map_err(|_| "invalid ACL recovery journal; refusing to execute".to_string())?;
+        let path = widestring(&journal.path);
+        let mut current_acl: *mut ACL = std::ptr::null_mut();
+        let mut descriptor = std::ptr::null_mut();
+        let result = unsafe {
+            GetNamedSecurityInfoW(
+                path.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut current_acl,
+                std::ptr::null_mut(),
+                &mut descriptor,
+            )
+        };
+        if result != 0 {
+            return Err(format!("cannot inspect journaled ACL for {}: {result}", journal.path));
+        }
+        let current = acl_bytes(current_acl)?;
+        let expected = STANDARD
+            .decode(&journal.expected_acl)
+            .map_err(|_| "invalid expected ACL in recovery journal".to_string())?;
+        let original = STANDARD
+            .decode(&journal.original_acl)
+            .map_err(|_| "invalid original ACL in recovery journal".to_string())?;
+        if current != expected {
+            unsafe { LocalFree(descriptor as *mut _) };
+            return Err(format!(
+                "ACL journal for {} no longer matches current ACL; refusing to overwrite",
+                journal.path
+            ));
+        }
+        let restored = unsafe {
+            SetNamedSecurityInfoW(
+                path.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                if original.is_empty() {
+                    std::ptr::null_mut()
+                } else {
+                    original.as_ptr() as *mut ACL
+                },
+                std::ptr::null_mut(),
+            )
+        };
+        unsafe { LocalFree(descriptor as *mut _) };
+        if restored != 0 {
+            return Err(format!("failed to restore journaled ACL for {}: {restored}", journal.path));
+        }
+        std::fs::remove_file(item.path())
+            .map_err(|_| "failed to remove recovered ACL journal".to_string())?;
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]
@@ -640,12 +1256,15 @@ fn validate(request: &ExecutionRequest) -> Result<(), String> {
     if request.cwd.is_empty() || request.cwd.len() > 4096 || request.cwd.contains('\0') {
         return Err("invalid cwd".to_string());
     }
-    if request.network != "off" {
-        return Err("network capability is not available".to_string());
-    }
+    validate_network_policy(&request.network)?;
+    validate_network_environment(request)?;
     #[cfg(target_os = "windows")]
-    if !windows_network_isolation_available() {
+    if !matches!(request.network, NetworkPolicy::Off) && !windows_network_isolation_available() {
         return Err("Windows network isolation is unavailable; refusing to execute".to_string());
+    }
+    #[cfg(not(target_os = "windows"))]
+    if !matches!(request.network, NetworkPolicy::Off) {
+        return Err("requested network capability is not available".to_string());
     }
     if request.execution_id.is_empty()
         || request.execution_id.len() > 128
@@ -674,6 +1293,92 @@ fn validate(request: &ExecutionRequest) -> Result<(), String> {
         .any(|arg| arg.contains('\0') || arg.len() > 64 * 1024)
     {
         return Err("invalid argument".to_string());
+    }
+    // Helper 重新校验环境块，避免恶意键名破坏 Windows 双 NUL block 或注入
+    // 额外的隐式环境；环境数量和总大小也必须有硬上限。
+    if request.env.len() > 256
+        || request.env.iter().any(|(key, value)| {
+            key.is_empty()
+                || key.contains('=')
+                || key.contains('\0')
+                || value.contains('\0')
+                || key.len() > 1024
+                || value.len() > 64 * 1024
+        })
+        || request
+            .env
+            .iter()
+            .map(|(key, value)| key.len() + value.len() + 2)
+            .sum::<usize>()
+            > 1024 * 1024
+    {
+        return Err("environment block is outside helper policy".to_string());
+    }
+    Ok(())
+}
+
+fn validate_network_policy(policy: &NetworkPolicy) -> Result<(), String> {
+    match policy {
+        NetworkPolicy::Off => Ok(()),
+        NetworkPolicy::Loopback { ports } => validate_network_ports(ports),
+        NetworkPolicy::Allowlist { hosts, ports, proxy_id, proxy_host, proxy_port } => {
+            validate_network_ports(ports)?;
+            if hosts.is_empty()
+                || hosts.len() > 64
+                || proxy_id.is_empty()
+                || proxy_id.len() > 128
+                || !matches!(proxy_host.as_str(), "127.0.0.1" | "::1")
+                || *proxy_port == 0
+            {
+                return Err("network allowlist is outside helper policy".to_string());
+            }
+            for host in hosts {
+                if host.is_empty()
+                    || host.len() > 253
+                    || host.contains('\0')
+                    || host != &host.to_ascii_lowercase()
+                    || host.ends_with('.')
+                    || host.starts_with('.')
+                    || host.contains("..")
+                    || !host.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'.')
+                {
+                    return Err("invalid network allowlist host".to_string());
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+fn validate_network_environment(request: &ExecutionRequest) -> Result<(), String> {
+    match &request.network {
+        NetworkPolicy::Off | NetworkPolicy::Loopback { .. } => {
+            if request.env.keys().any(|key| matches!(key.to_ascii_uppercase().as_str(), "HTTP_PROXY" | "HTTPS_PROXY" | "ALL_PROXY")) {
+                return Err("proxy environment is forbidden by this network policy".to_string());
+            }
+        }
+        NetworkPolicy::Allowlist { proxy_host, proxy_port, .. } => {
+            let formatted_host = if proxy_host == "::1" { "[::1]" } else { proxy_host };
+            let expected = format!("http://{formatted_host}:{proxy_port}");
+            for key in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"] {
+                if request.env.get(key) != Some(&expected) {
+                    return Err("proxy environment does not match the approved endpoint".to_string());
+                }
+            }
+            if request.env.get("NO_PROXY").map(String::as_str) != Some("") {
+                return Err("NO_PROXY must be empty for an allowlisted execution".to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_network_ports(ports: &[u16]) -> Result<(), String> {
+    if ports.is_empty() || ports.len() > 32 || ports.iter().any(|port| *port == 0) {
+        return Err("invalid network port allowlist".to_string());
+    }
+    if ports.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err("network ports must be unique and sorted".to_string());
     }
     Ok(())
 }
@@ -722,10 +1427,54 @@ fn target_command(request: &ExecutionRequest) -> Result<Command, String> {
     Err("unsupported platform".to_string())
 }
 
-/** Windows 仅在 AppContainer profile 与 Job Object 都可创建时声明隔离能力。 */
+/** 只有 WFP、网络 capability SID 与回环配置 API 都可用时才声明 Windows 联网能力。 */
 #[cfg(target_os = "windows")]
 fn windows_network_isolation_available() -> bool {
-    windows_isolation_probe()
+    use std::ptr::{null, null_mut};
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::NetworkManagement::WindowsFilteringPlatform::{
+        FwpmEngineClose0, FwpmEngineOpen0, FWPM_SESSION0, FWPM_SESSION_FLAG_DYNAMIC,
+    };
+    use windows_sys::Win32::NetworkManagement::WindowsFirewall::NetworkIsolationGetAppContainerConfig;
+    use windows_sys::Win32::Security::{
+        CreateWellKnownSid, SECURITY_MAX_SID_SIZE, SID_AND_ATTRIBUTES,
+        WinCapabilityInternetClientSid,
+    };
+    use windows_sys::Win32::System::Rpc::RPC_C_AUTHN_WINNT;
+    let mut capability_sid = vec![0u8; SECURITY_MAX_SID_SIZE as usize];
+    let mut capability_size = capability_sid.len() as u32;
+    if unsafe {
+        CreateWellKnownSid(
+            WinCapabilityInternetClientSid,
+            null_mut(),
+            capability_sid.as_mut_ptr() as *mut _,
+            &mut capability_size,
+        )
+    } == 0
+    {
+        return false;
+    }
+    let mut count = 0u32;
+    let mut exemptions: *mut SID_AND_ATTRIBUTES = null_mut();
+    if unsafe { NetworkIsolationGetAppContainerConfig(&mut count, &mut exemptions) } != 0 {
+        return false;
+    }
+    if !exemptions.is_null() {
+        unsafe { LocalFree(exemptions as *mut _) };
+    }
+    let mut session = FWPM_SESSION0::default();
+    session.flags = FWPM_SESSION_FLAG_DYNAMIC;
+    let mut engine = null_mut();
+    let status = unsafe {
+        FwpmEngineOpen0(null(), RPC_C_AUTHN_WINNT, null(), &session, &mut engine)
+    };
+    if status != 0 || engine.is_null() {
+        return false;
+    }
+    unsafe {
+        FwpmEngineClose0(engine);
+    }
+    true
 }
 
 #[cfg(target_os = "windows")]

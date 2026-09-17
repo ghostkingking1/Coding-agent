@@ -6,7 +6,8 @@ import { createRunCommandModelInputSchema } from "./model-tool-schemas.ts";
 import { WorkspacePolicy } from "./security.ts";
 import { argsInputSchema, envInputSchema, singleLineTextSchema } from "./tool-input-schemas.ts";
 import { defineTool } from "./tool-schema.ts";
-import { executionRequestDigest, ProcessSandboxBackend, type ExecutionRequest, type SandboxBackend } from "./sandbox.ts";
+import { executionRequestDigest, ProcessSandboxBackend, canonicalNetworkPolicy, type ExecutionRequest, type SandboxBackend, type ExecutionNetworkPolicy } from "./sandbox.ts";
+import { decideSandboxPolicy, type PolicyDecision, type RiskClass, type SandboxPolicy } from "./sandbox-policy.ts";
 import crypto from "node:crypto";
 import type { Tool, ToolContext } from "../agent/types.ts";
 
@@ -27,6 +28,8 @@ export interface RunCommandToolOptions {
   readonly cpuTimeMs?: number;
   readonly memoryBytes?: number;
   readonly maxProcesses?: number;
+  /** 本地策略允许的联网范围；未配置时模型只能使用 network.off。 */
+  readonly allowedNetwork?: ExecutionNetworkPolicy;
 }
 
 /** run_command 审批预览，不包含环境变量值。 */
@@ -39,6 +42,11 @@ export interface RunCommandPreview {
   readonly maxStderrBytes: number;
   readonly envKeys: readonly string[];
   readonly requestDigest: string;
+  readonly policyDigest: string;
+  readonly approvalDigest: string;
+  readonly riskClass: RiskClass;
+  readonly requiredCapabilities: readonly string[];
+  readonly policy: SandboxPolicy;
   readonly sandbox: { readonly backend: string; readonly version: string; readonly capabilities: readonly string[] };
 }
 
@@ -69,6 +77,7 @@ interface NormalizedRunCommandOptions {
   readonly cpuTimeMs: number;
   readonly memoryBytes: number;
   readonly maxProcesses: number;
+  readonly allowedNetwork?: ExecutionNetworkPolicy;
 }
 
 interface PlannedCommand {
@@ -77,6 +86,7 @@ interface PlannedCommand {
   readonly env: NodeJS.ProcessEnv;
   readonly request: ExecutionRequest;
   readonly sandbox: SandboxBackend;
+  readonly policyDecision: PolicyDecision;
 }
 
 interface SpawnPlan {
@@ -108,6 +118,11 @@ const runCommandInputSchema = z.object({
   cwd: singleLineTextSchema.default("."),
   timeoutMs: z.number().int().min(1).optional(),
   env: envInputSchema.default({}),
+  network: z.object({
+    mode: z.literal("off").or(z.literal("allowlist")),
+    hosts: z.array(z.string().min(1)).max(64).optional(),
+    ports: z.array(z.number().int().min(1).max(65535)).max(32).optional(),
+  }).default({ mode: "off" }),
 }).strict();
 
 /** run_command 原始输入类型，由 Zod schema 自动推导。 */
@@ -160,6 +175,7 @@ function normalizeOptions(options: RunCommandToolOptions): NormalizedRunCommandO
     cpuTimeMs,
     memoryBytes,
     maxProcesses,
+    allowedNetwork: options.allowedNetwork ? canonicalNetworkPolicy(options.allowedNetwork) : undefined,
   };
 }
 
@@ -170,6 +186,8 @@ function planCommand(policy: WorkspacePolicy, options: NormalizedRunCommandOptio
     throw new Error(`timeoutMs must be an integer from 1 to ${options.maxTimeoutMs}`);
   }
   const env = buildEnvironment(options.allowedEnv, input.env);
+  const network = normalizeRequestedNetwork(input.network, options.allowedNetwork);
+  if (network.mode === "allowlist") injectProxyEnvironment(env, network);
   const envKeys = Object.keys(env).sort((a, b) => a.localeCompare(b));
   const request: ExecutionRequest = {
     executionId: crypto.randomUUID(),
@@ -181,20 +199,25 @@ function planCommand(policy: WorkspacePolicy, options: NormalizedRunCommandOptio
     timeoutMs,
     maxStdoutBytes: options.maxStdoutBytes,
     maxStderrBytes: options.maxStderrBytes,
-    network: "off",
+    network,
     cpuTimeMs: options.cpuTimeMs,
     memoryBytes: options.memoryBytes,
     maxProcesses: options.maxProcesses,
+    filesystemWriteHint: true,
   };
-  const required = options.requireOsIsolation
-    ? ["process.spawn", "workspace.fs", "network.off", "os.isolation"] as const
-    : ["process.spawn", "workspace.fs", "network.off"] as const;
+  const policyDecision = decideSandboxPolicy(request, options.sandbox.capabilities.capabilities);
+  const required: import("./sandbox.ts").SandboxCapability[] = [...policyDecision.requiredCapabilities];
+  if (options.requireOsIsolation) required.push("os.isolation");
+  if (!policyDecision.allowed) {
+    throw new Error(policyDecision.reason ?? "Sandbox policy rejected execution");
+  }
   options.sandbox.assertAvailable(required);
   return {
     cwdPath,
     env,
     request,
     sandbox: options.sandbox,
+    policyDecision,
     preview: {
       command: input.command,
       args: input.args,
@@ -204,9 +227,67 @@ function planCommand(policy: WorkspacePolicy, options: NormalizedRunCommandOptio
       maxStderrBytes: options.maxStderrBytes,
       envKeys,
       requestDigest: executionRequestDigest(request),
+      policyDigest: policyDecision.policyDigest,
+      approvalDigest: policyDecision.approvalDigest,
+      riskClass: policyDecision.riskClass,
+      requiredCapabilities: required,
+      policy: policyDecision.policy,
       sandbox: options.sandbox.capabilities,
     },
   };
+}
+
+function normalizeRequestedNetwork(
+  input: ParsedRunCommandInput["network"] | undefined,
+  allowed: ExecutionNetworkPolicy | undefined,
+): ExecutionNetworkPolicy {
+  // 部分内部工具会直接复用 preview/execute；缺省值仍必须保持为 fail-closed 的断网模式。
+  if (!input || input.mode === "off") return { mode: "off" };
+  if (!allowed || allowed.mode !== "allowlist") {
+    throw new Error("Network access is not enabled by local sandbox policy");
+  }
+  const requestedHosts = [...new Set((input.hosts ?? []).map(normalizeNetworkHost))].sort();
+  const requestedPorts = [...new Set(input.ports ?? [])].sort((a, b) => a - b);
+  if (requestedHosts.length === 0 || requestedPorts.length === 0) {
+    throw new Error("Network allowlist requires at least one host and port");
+  }
+  const allowedHosts = new Set(allowed.hosts.map(normalizeNetworkHost));
+  const allowedPorts = new Set(allowed.ports);
+  if (requestedHosts.some((host) => !allowedHosts.has(host)) || requestedPorts.some((port) => !allowedPorts.has(port))) {
+    throw new Error("Requested network target exceeds local sandbox policy");
+  }
+  return {
+    mode: "allowlist",
+    hosts: requestedHosts,
+    ports: requestedPorts,
+    proxyId: allowed.proxyId,
+    proxyHost: allowed.proxyHost,
+    proxyPort: allowed.proxyPort,
+  };
+}
+
+function injectProxyEnvironment(env: NodeJS.ProcessEnv, policy: Extract<ExecutionNetworkPolicy, { mode: "allowlist" }>): void {
+  if (policy.proxyHost !== "127.0.0.1" && policy.proxyHost !== "::1") {
+    throw new Error("The controlled proxy endpoint must be loopback");
+  }
+  if (!Number.isInteger(policy.proxyPort) || policy.proxyPort < 1 || policy.proxyPort > 65535) {
+    throw new Error("Invalid controlled proxy port");
+  }
+  const host = policy.proxyHost === "::1" ? "[::1]" : policy.proxyHost;
+  const proxyUrl = `http://${host}:${policy.proxyPort}`;
+  // 代理变量由本地策略注入，不能从模型 env 继承；ALL_PROXY 覆盖支持该标准的客户端。
+  env.HTTP_PROXY = proxyUrl;
+  env.HTTPS_PROXY = proxyUrl;
+  env.ALL_PROXY = proxyUrl;
+  env.NO_PROXY = "";
+}
+
+function normalizeNetworkHost(value: string): string {
+  const host = value.trim().toLowerCase().replace(/\.$/, "");
+  if (!host || host.length > 253 || host.startsWith(".") || host.includes("..") || !/^[a-z0-9.-]+$/.test(host)) {
+    throw new Error(`Invalid network host: ${value}`);
+  }
+  return host;
 }
 
 function buildEnvironment(allowedEnv: readonly string[], requestedEnv: Readonly<Record<string, string>>): NodeJS.ProcessEnv {
@@ -260,6 +341,11 @@ async function runPlannedCommand(plan: PlannedCommand, context: ToolContext): Pr
         backend: plan.preview.sandbox.backend,
         backendVersion: plan.preview.sandbox.version,
         capabilities: plan.preview.sandbox.capabilities,
+        policyDigest: plan.preview.policyDigest,
+        approvalDigest: plan.preview.approvalDigest,
+        riskClass: plan.preview.riskClass,
+        requiredCapabilities: plan.preview.requiredCapabilities,
+        networkPolicy: plan.preview.policy.network,
         timeoutMs: plan.request.timeoutMs,
         cpuTimeMs: plan.request.cpuTimeMs,
         memoryBytes: plan.request.memoryBytes,
@@ -305,6 +391,9 @@ async function runPlannedCommand(plan: PlannedCommand, context: ToolContext): Pr
         requestId: plan.request.executionId,
         metadata: {
           requestDigest: plan.preview.requestDigest,
+          policyDigest: plan.preview.policyDigest,
+          approvalDigest: plan.preview.approvalDigest,
+          riskClass: plan.preview.riskClass,
           exitCode: result.exitCode,
           signal: result.signal,
           durationMs: Date.now() - startedAt,
