@@ -17,7 +17,29 @@ export type SandboxCapability =
   | "hardening.appcontainer"
   | "hardening.seccomp"
   | "hardening.handle_whitelist"
-  | "hardening.restricted_token";
+  | "hardening.restricted_token"
+  | "hardening.explicit_environment"
+  | "hardening.job_object"
+  | "hardening.acl_recovery_journal"
+  | "network.loopback"
+  | "network.proxy"
+  | "network.allowlist"
+  | "filesystem.workspace_write";
+
+/** Helper 可独立验证的网络请求；数组在进入摘要和 Helper 前必须规范化。 */
+export type ExecutionNetworkPolicy =
+  | { readonly mode: "off" }
+  | { readonly mode: "loopback"; readonly ports: readonly number[] }
+  | {
+      readonly mode: "allowlist";
+      readonly hosts: readonly string[];
+      readonly ports: readonly number[];
+      readonly proxyId: string;
+      readonly proxyHost: string;
+      readonly proxyPort: number;
+    };
+/** 兼容旧调用方的 off 字符串；新代码必须传结构化对象。 */
+export type ExecutionNetworkPolicyInput = ExecutionNetworkPolicy | "off";
 
 export interface SandboxCapabilities {
   readonly backend: string;
@@ -36,10 +58,12 @@ export interface ExecutionRequest {
   readonly timeoutMs: number;
   readonly maxStdoutBytes: number;
   readonly maxStderrBytes: number;
-  readonly network: "off";
+  readonly network: ExecutionNetworkPolicyInput;
   readonly cpuTimeMs: number;
   readonly memoryBytes: number;
   readonly maxProcesses: number;
+  /** 由工具策略推导，模型不能直接提升该标记。 */
+  readonly filesystemWriteHint?: boolean;
 }
 
 export interface SandboxSpawnRequest extends ExecutionRequest {
@@ -69,7 +93,7 @@ export class ProcessSandboxBackend implements SandboxBackend {
   readonly capabilities: SandboxCapabilities = {
     backend: "process",
     version: "0",
-    capabilities: ["process.spawn", "process-tree", "workspace.fs", "network.off"],
+    capabilities: ["process.spawn", "process-tree", "workspace.fs", "filesystem.workspace_write", "network.off", "resource.limits"],
   };
 
   assertAvailable(required: readonly SandboxCapability[]): void {
@@ -78,7 +102,7 @@ export class ProcessSandboxBackend implements SandboxBackend {
   }
 
   spawn(request: SandboxSpawnRequest): ChildProcess {
-    this.assertAvailable(["process.spawn", "network.off"]);
+    this.assertAvailable(["process.spawn", networkCapability(request.network)]);
     return spawn(request.executable, request.args, {
       cwd: request.cwd,
       env: request.env,
@@ -127,7 +151,11 @@ export class RustHelperSandboxBackend implements SandboxBackend {
       if (parsed.backend !== "rust-helper" || parsed.version !== "1" || !Array.isArray(parsed.capabilities)) {
         throw new Error("invalid helper capability response");
       }
-      this.capabilities = { backend: parsed.backend, version: parsed.version, capabilities: parsed.capabilities as SandboxCapability[] };
+      const capabilities = [...parsed.capabilities] as SandboxCapability[];
+       // 旧版 helper 已经执行工作区边界和超时，只是尚未上报新版细粒度别名；在本地能力快照中补齐兼容别名。
+       if (capabilities.includes("workspace.fs") && !capabilities.includes("filesystem.workspace_write")) capabilities.push("filesystem.workspace_write");
+       if (capabilities.includes("process.spawn") && !capabilities.includes("resource.limits")) capabilities.push("resource.limits");
+       this.capabilities = { backend: parsed.backend, version: parsed.version, capabilities };
     } catch (error) {
       throw new SandboxUnavailableError(`Rust sandbox helper handshake failed: ${error instanceof Error ? error.message : "unknown error"}`);
     }
@@ -139,7 +167,7 @@ export class RustHelperSandboxBackend implements SandboxBackend {
   }
 
   spawn(request: SandboxSpawnRequest): ChildProcess {
-    this.assertAvailable(["process.spawn", "network.off"]);
+    this.assertAvailable(["process.spawn", networkCapability(request.network)]);
     const encoded = Buffer.from(JSON.stringify({
       workspace_root: request.workspaceRoot,
       execution_id: request.executionId,
@@ -164,6 +192,33 @@ export class RustHelperSandboxBackend implements SandboxBackend {
   }
 }
 
+export function normalizeNetworkPolicy(policy: ExecutionNetworkPolicyInput): ExecutionNetworkPolicy {
+  return policy === "off" ? { mode: "off" } : policy;
+}
+
+export function networkCapability(policy: ExecutionNetworkPolicyInput): SandboxCapability {
+  policy = normalizeNetworkPolicy(policy);
+  if (policy.mode === "off") return "network.off";
+  if (policy.mode === "loopback") return "network.loopback";
+  return "network.allowlist";
+}
+
+/** 审批摘要与 Helper 必须看到完全相同的排序结果，避免集合顺序造成策略歧义。 */
+export function canonicalNetworkPolicy(input: ExecutionNetworkPolicyInput): ExecutionNetworkPolicy {
+  const policy = normalizeNetworkPolicy(input);
+  if (policy.mode === "off") return policy;
+  const ports = [...new Set(policy.ports)].sort((a, b) => a - b);
+  if (policy.mode === "loopback") return { mode: "loopback", ports };
+  return {
+    mode: "allowlist",
+    hosts: [...new Set(policy.hosts.map((host) => host.toLowerCase().replace(/\.$/, "")))].sort(),
+    ports,
+    proxyId: policy.proxyId,
+    proxyHost: policy.proxyHost.toLowerCase(),
+    proxyPort: policy.proxyPort,
+  };
+}
+
 /** 对规范化请求生成稳定摘要，Approval 必须绑定该摘要而不是命令字符串。 */
 export function executionRequestDigest(request: ExecutionRequest): string {
   const canonical = JSON.stringify({
@@ -176,10 +231,11 @@ export function executionRequestDigest(request: ExecutionRequest): string {
     timeoutMs: request.timeoutMs,
     maxStdoutBytes: request.maxStdoutBytes,
     maxStderrBytes: request.maxStderrBytes,
-    network: request.network,
+    network: canonicalNetworkPolicy(request.network),
     cpuTimeMs: request.cpuTimeMs,
     memoryBytes: request.memoryBytes,
     maxProcesses: request.maxProcesses,
+    filesystemWriteHint: request.filesystemWriteHint ?? false,
   });
   return crypto.createHash("sha256").update(canonical).digest("hex");
 }

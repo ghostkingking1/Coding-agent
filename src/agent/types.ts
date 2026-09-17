@@ -306,6 +306,9 @@ export interface AgentOptions {
   systemPrompt?: string;
   /** 取消当前运行的信号。 */
   signal?: AbortSignal;
+  /** 按当前请求动态补充 Skill 上下文；其内容不改变安全策略。 */
+  skillContext?: (input: string) => string | undefined | Promise<string | undefined>;
+
   /** 每个运行事件发出时调用的观察器。 */
   onEvent?: (event: RunEvent) => void | Promise<void>;
   /** 是否生成本次运行涉及文件的最终 diff。 */

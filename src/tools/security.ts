@@ -64,6 +64,26 @@ export class WorkspacePolicy {
     return candidate;
   }
 
+  /** 在允许隐藏目录的受控子树内解析路径，供 Skill 等受控元数据使用。 */
+  resolveControlledExisting(input: unknown, controlledRoot: string): string {
+    if (typeof input !== "string" || !input.trim()) throw new WorkspaceSecurityError("Path must be a non-empty string");
+    if (input.includes("\0")) throw new WorkspaceSecurityError("Path contains a null byte");
+    const root = this.resolveExistingControlledRoot(controlledRoot);
+    let candidate: string;
+    try { candidate = fs.realpathSync.native(path.resolve(this.root, input)); }
+    catch { throw new WorkspaceSecurityError("Path does not exist or cannot be resolved"); }
+    const relative = path.relative(root, candidate);
+    if (relative && (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))) throw new WorkspaceSecurityError("Path is outside the controlled directory");
+    return candidate;
+  }
+
+  private resolveExistingControlledRoot(input: string): string {
+    let root: string;
+    try { root = fs.realpathSync.native(path.resolve(this.root, input)); }
+    catch { throw new WorkspaceSecurityError("Controlled directory does not exist or cannot be resolved"); }
+    this.assertWithin(root);
+    return root;
+  }
   /** 解析受大小限制的普通文件。 */
   resolveFile(input: unknown): { path: string; size: number } {
     const resolved = this.resolveExisting(input);

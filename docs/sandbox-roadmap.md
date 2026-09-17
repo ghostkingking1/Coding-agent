@@ -80,15 +80,21 @@
 
 ## 开发顺序和质量门槛
 
-当前状态：MVP 控制面和 Rust Helper 协议已实现；V1 已加入执行 ID、资源限制请求、Helper 侧 wall-clock 超时、Windows Job Object 进程/内存/CPU 限制、Linux `no_new_privs`/地址空间/进程数限制，以及命令执行审计事件。V2 已加入 Linux namespace 内的只读宿主根、仅 workspace 可写 bind mount、凭据目录覆盖、seccomp 过滤，以及 Windows 每次执行独立 AppContainer、`DISABLE_MAX_PRIVILEGE` Restricted Token、非 reparse workspace 最小 ACL 保存/恢复、Job Object 与标准流句柄白名单组合隔离。Windows 目标以挂起状态创建，必须先加入已配置 Job 后才恢复执行，避免 Job 纳入前的子进程竞态。
+当前状态：MVP 控制面和 Rust Helper 协议已实现；V1 已加入执行 ID、资源限制请求、Helper 侧 wall-clock 超时、Windows Job Object 进程/内存/CPU 限制、Linux `no_new_privs`/地址空间/进程数限制，以及命令执行审计事件。V2 已加入 Linux namespace 内的只读宿主根、仅 workspace 可写 bind mount、凭据目录覆盖、seccomp 过滤，以及 Windows 每次执行独立 AppContainer、`DISABLE_MAX_PRIVILEGE` Restricted Token、非 reparse workspace 最小 ACL 保存/恢复、Job Object 与标准流句柄白名单组合隔离。Windows 目标以挂起状态创建，必须先加入已配置 Job 后才恢复执行，避免 Job 纳入前的子进程竞态；ACL 临时授权增加了原子恢复 journal，Helper 下次启动会在当前 ACL 仍匹配预期修改版本时自动恢复。
 
-仍未宣称完成的 V2 能力：精细 `/proc`/设备限制，以及 Windows 的独立网络过滤、注册表显式 deny policy 和 ACL 崩溃后恢复守护。AppContainer 与 Restricted Token 默认拒绝未授权的网络、设备、注册表和用户凭据访问；但这些更细粒度策略必须有平台级逃逸验证后才能单独声明 Capability。Linux seccomp 会在握手中以独立 Helper 子进程探测；成功时声明 `hardening.seccomp`，并在 namespace/mount 建立后、目标程序 exec 前拒绝挂载、namespace、ptrace、bpf、内核模块、keyring 等高风险 syscall。Linux cgroup v2 会在宿主已委派可写层级时探测并声明，执行时把完整 sandbox 子树加入该 cgroup 并写入内存、PID、CPU 配额。其余能力也必须由平台探测证明后才能加入 Capability，不能以“请求已携带限制”代替实际内核隔离。
+仍未宣称完成的 V2 能力：精细 `/proc`/设备限制，以及 Windows 的独立网络过滤和注册表显式 deny policy。AppContainer 与 Restricted Token 默认拒绝未授权的网络、设备、注册表和用户凭据访问；但这些更细粒度策略必须有平台级逃逸验证后才能单独声明 Capability。ACL journal 只在“当前 ACL 等于本次临时修改后的 ACL”时恢复；如果检测到用户或其他程序已经改动 ACL，Helper 会拒绝执行而不会覆盖变化。Linux seccomp 会在握手中以独立 Helper 子进程探测；成功时声明 `hardening.seccomp`，并在 namespace/mount 建立后、目标程序 exec 前拒绝挂载、namespace、ptrace、bpf、内核模块、keyring 等高风险 syscall。Linux cgroup v2 会在宿主已委派可写层级时探测并声明，执行时把完整 sandbox 子树加入该 cgroup 并写入内存、PID、CPU 配额。其余能力也必须由平台探测证明后才能加入 Capability，不能以“请求已携带限制”代替实际内核隔离。
 
 Windows 已有集成回归：workspace 写入成功、workspace 外读取失败、回环 TCP 失败以及超时后的延迟写入不发生。严格 AppContainer 不会修改宿主工具链 ACL；若目标程序需要继续启动未被系统授予 AppContainer 执行权限的宿主二进制，执行会明确失败而非放宽权限。这是当前 Fail Closed 的兼容性边界，受控工具链镜像属于后续隔离后端工作。
 
 平台能力仍按探测结果决定：Linux 通过 `unshare` 和 `no_new_privs` 前置设置才启用对应能力；Windows 只有 AppContainer、Workspace ACL、Restricted Token、句柄白名单和 Job Object 探测成功才启用 `os.isolation`。任何能力不足继续 Fail Closed。
 
 推荐分支：`codex/sandbox-mvp`、`codex/sandbox-v1-stability`、`codex/sandbox-v2-hardening`、`codex/sandbox-v3-network-policy`、`codex/sandbox-v4-isolation-backends`。
+
+V3 已落地策略控制面和受控代理数据面：`SandboxPolicy`、R1-R6 风险分类、Capability 缺失拒绝、策略摘要、Approval 绑定摘要，以及命令执行审计中的风险和策略信息。`ExecutionRequest.network` 使用结构化策略，模型只能请求本地最大策略的 host/port 子集，`proxyId` 由本地配置注入并进入请求与审批摘要。Rust Helper 会重新校验模式、规范化 host、排序端口和代理身份，不能信任 TS 已检查过的请求。
+
+受控代理实现 HTTP absolute-form 与 HTTPS CONNECT，只连接 DNS 校验后的固定 IP，拒绝 literal IP、私网、回环、链路本地、组播等地址，并限制请求、响应、隧道字节数和连接空闲时间。代理不会记录认证头，也不会自动跟随重定向；每个新目标必须重新经过 allowlist 与 DNS 校验。
+
+V3 仍未声明 `network.proxy`/`network.allowlist` 平台能力：仅设置 `HTTP_PROXY`/`HTTPS_PROXY` 不能阻止进程绕过代理直连。Linux 仍需 namespace 内仅可达代理的 bridge/nftables 链路，Windows 仍需 WFP/防火墙 broker 或等价内核强制路径。完成前联网请求会因 Capability 缺失在 spawn 前 Fail Closed，Rust Helper 也会再次拒绝；绝不把代理环境变量当作安全边界。远程 MCP 与 QAuth 不属于 V3 沙箱实现，由独立分支通过统一 Tool Contract 接入。
 
 MVP 完成前不得向模型注册 `run_command`。每个阶段都必须覆盖正常路径、审批失败、隔离失败、资源限制、进程清理和逃逸尝试，并通过：
 

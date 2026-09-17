@@ -92,6 +92,17 @@ export function createRunCommandModelInputSchema(maxTimeoutMs: number): JsonSche
       cwd: { ...workspacePathSchema, default: "." },
       timeoutMs: { type: "integer", minimum: 1, maximum: maxTimeoutMs },
       env: { ...environmentSchema, default: {} },
+      network: {
+        type: "object",
+        properties: {
+          mode: { type: "string", enum: ["off", "allowlist"], default: "off" },
+          hosts: { type: "array", items: { type: "string", minLength: 1 }, maxItems: 64 },
+          ports: { type: "array", items: { type: "integer", minimum: 1, maximum: 65535 }, maxItems: 32 },
+        },
+        additionalProperties: false,
+        default: { mode: "off" },
+        description: "Optional network request. Local policy and sandbox capabilities must allow every target.",
+      },
     },
     required: ["command"],
     additionalProperties: false,
