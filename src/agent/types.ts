@@ -6,6 +6,22 @@ export type Role = "system" | "user" | "assistant" | "tool";
 /** 工具声明的能力类型，用于审批和安全策略判断。 */
 export type ToolCapability = "read" | "write" | "execute" | "network";
 
+export type TaskState = "received" | "working" | "verifying" | "repairing" | "completed" | "blocked";
+
+export interface VerificationPolicy {
+  readonly mode: "coding";
+  readonly maxRepairAttempts?: number;
+}
+
+export interface VerificationSummary {
+  readonly required: boolean;
+  readonly writeObserved: boolean;
+  readonly verifierTool?: string;
+  readonly verificationPassed: boolean;
+  readonly verificationAttempts: number;
+  readonly repairAttempts: number;
+}
+
 /** 工具输入 schema 使用 Zod，便于运行时校验后把 unknown 收窄为工具自己的输入类型。 */
 export type ToolInputSchema = z.ZodType;
 
@@ -30,6 +46,11 @@ export interface ToolManifest {
   readonly parallelizable?: boolean;
   /** 相同冲突键的调用必须串行，避免资源竞态。 */
   readonly conflictKey?: (input: unknown) => string | undefined;
+  /** 本地执行侧的验证工具声明，不会发送给模型。 */
+  readonly verification?: {
+    readonly kind: "test";
+    readonly isSuccessful: (result: unknown) => boolean;
+  };
 }
 
 /** 在工具产生副作用前提交给审批策略的请求。 */
@@ -274,7 +295,8 @@ export type RunEvent =
   | { type: "tool_failed"; step: number; toolName: string; toolCallId: string; error: string }
   | { type: "tool_batch_finished"; step: number; batchId: string; succeeded: number; failed: number }
   | { type: "run_finished"; steps: number; stopReason: AgentResult["stopReason"] }
-  | { type: "run_failed"; error: string };
+  | { type: "run_failed"; error: string }
+  | { type: "task_state_changed"; from: TaskState; to: TaskState; reason: string };
 
 /** Agent 的运行配置。 */
 export interface AgentOptions {
@@ -298,6 +320,8 @@ export interface AgentOptions {
   maxConcurrentToolCalls?: number;
   retry?: ModelRetryOptions;
   auditSink?: AuditSink;
+  /** 启用 coding 任务的写入后验证门禁；默认关闭以保持通用 Agent 兼容性。 */
+  verification?: VerificationPolicy;
 }
 
 /** 单次 Agent run 可由 Session 注入的上下文和标识。 */
@@ -339,9 +363,11 @@ export interface AgentResult {
   /** 实际执行的模型循环次数。 */
   steps: number;
   /** 运行结束的原因。 */
-  stopReason: "completed" | "max_steps";
+  stopReason: "completed" | "max_steps" | "blocked";
   /** 本次运行成功写入文件的最终 unified diff。 */
   diff?: import("./run-diff.ts").RunDiff;
   /** 本次运行前后 Git 状态及与 Agent diff 的归属交叉结果。 */
   gitChanges?: import("../repository/git.ts").GitChangeReport;
+  readonly taskState: TaskState;
+  readonly verification: VerificationSummary;
 }

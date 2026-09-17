@@ -314,3 +314,152 @@ test("emits batch lifecycle events and checkpoints after the complete batch", as
   assert.equal(checkpoints.filter((checkpoint) => checkpoint.phase === "tool").length, 1);
   assert.deepEqual(checkpoints.find((checkpoint) => checkpoint.phase === "tool")?.toolResults.map((result) => result.toolCallId), ["a", "b"]);
 });
+
+function createCodingTools(testResult: { readonly status: string; readonly passed: boolean }) {
+  return new ToolRegistry()
+    .register({
+      name: "apply_patch",
+      description: "modify",
+      manifest: { capabilities: ["write"] as const },
+      execute: () => "changed",
+    })
+    .register({
+      name: "run_tests",
+      description: "verify",
+      manifest: {
+        capabilities: ["execute"] as const,
+        verification: {
+          kind: "test" as const,
+          isSuccessful: (result: unknown) => {
+            const value = result as { status?: string; passed?: boolean };
+            return value.status === "passed" && value.passed === true;
+          },
+        },
+      },
+      execute: () => testResult,
+    });
+}
+
+test("coding verification requires a passing run_tests after a write", async () => {
+  let calls = 0;
+  const model: ModelClient = {
+    provider: "fake",
+    model: "fake-model",
+    capabilities: fakeCapabilities,
+    async generate(request): Promise<ModelResponse> {
+      calls += 1;
+      if (calls === 1) return { message: { role: "assistant", content: "editing", toolCalls: [{ id: "patch", name: "apply_patch", input: {} }] } };
+      if (calls === 2) return { message: { role: "assistant", content: "testing", toolCalls: [{ id: "tests", name: "run_tests", input: {} }] } };
+      return { message: { role: "assistant", content: "verified" } };
+    },
+  };
+  const result = await new Agent(model, createCodingTools({ status: "passed", passed: true }), { verification: { mode: "coding" } }).run("change it");
+  assert.equal(result.finalText, "verified");
+  assert.equal(result.taskState, "completed");
+  assert.equal(result.stopReason, "completed");
+  assert.deepEqual(result.verification, { required: true, writeObserved: true, verifierTool: "run_tests", verificationPassed: true, verificationAttempts: 1, repairAttempts: 0 });
+});
+
+test("coding verification injects a private reminder when the model finishes early", async () => {
+  let calls = 0;
+  const requests: ModelRequest[] = [];
+  const model: ModelClient = {
+    provider: "fake",
+    model: "fake-model",
+    capabilities: fakeCapabilities,
+    async generate(request): Promise<ModelResponse> {
+      requests.push(request);
+      calls += 1;
+      if (calls === 1) return { message: { role: "assistant", content: "editing", toolCalls: [{ id: "patch", name: "apply_patch", input: {} }] } };
+      return { message: { role: "assistant", content: "done" } };
+    },
+  };
+  const result = await new Agent(model, createCodingTools({ status: "passed", passed: true }), { maxSteps: 4, verification: { mode: "coding", maxRepairAttempts: 3 } }).run("change it");
+  assert.equal(result.taskState, "blocked");
+  assert.equal(result.stopReason, "blocked");
+  assert.equal(result.verification.repairAttempts, 3);
+  assert.match(requests[1]?.messages.at(-1)?.content ?? "", /verification has not passed/);
+  assert.equal(result.messages.some((message) => message.content.includes("verification has not passed")), false);
+});
+
+test("coding verification retries failed tests and resets after a new write", async () => {
+  let calls = 0;
+  const model: ModelClient = {
+    provider: "fake",
+    model: "fake-model",
+    capabilities: fakeCapabilities,
+    async generate(): Promise<ModelResponse> {
+      calls += 1;
+      const tool = calls === 1 ? "apply_patch" : calls === 2 ? "run_tests" : calls === 3 ? "apply_patch" : calls === 4 ? "run_tests" : undefined;
+      return tool ? { message: { role: "assistant", content: tool, toolCalls: [{ id: `${calls}`, name: tool, input: {} }] } } : { message: { role: "assistant", content: "verified twice" } };
+    },
+  };
+  let testRuns = 0;
+  const tools = createCodingTools({ status: "passed", passed: true });
+  const testTool = tools.get("run_tests")!;
+  const originalExecute = testTool.execute;
+  testTool.execute = async (...args) => { testRuns += 1; return originalExecute(...args); };
+  const result = await new Agent(model, tools, { verification: { mode: "coding" } }).run("change twice");
+  assert.equal(result.taskState, "completed");
+  assert.equal(result.verification.verificationAttempts, 2);
+  assert.equal(testRuns, 2);
+});
+
+test("coding verification does not accept a malformed passing result", async () => {
+  let calls = 0;
+  const model: ModelClient = {
+    provider: "fake",
+    model: "fake-model",
+    capabilities: fakeCapabilities,
+    async generate(): Promise<ModelResponse> {
+      calls += 1;
+      if (calls === 1) return { message: { role: "assistant", content: "editing", toolCalls: [{ id: "patch", name: "apply_patch", input: {} }] } };
+      if (calls === 2) return { message: { role: "assistant", content: "testing", toolCalls: [{ id: "tests", name: "run_tests", input: {} }] } };
+      return { message: { role: "assistant", content: "done" } };
+    },
+  };
+  const result = await new Agent(model, createCodingTools({ status: "passed", passed: false }), { maxSteps: 4, verification: { mode: "coding", maxRepairAttempts: 1 } }).run("change it");
+  assert.equal(result.taskState, "blocked");
+  assert.equal(result.verification.verificationPassed, false);
+});
+
+test("coding verification ignores run_tests before any successful write", async () => {
+  let calls = 0;
+  const model: ModelClient = {
+    provider: "fake",
+    model: "fake-model",
+    capabilities: fakeCapabilities,
+    async generate(): Promise<ModelResponse> {
+      calls += 1;
+      return calls === 1
+        ? { message: { role: "assistant", content: "checking", toolCalls: [{ id: "tests", name: "run_tests", input: {} }] } }
+        : { message: { role: "assistant", content: "read-only complete" } };
+    },
+  };
+  const result = await new Agent(model, createCodingTools({ status: "passed", passed: true }), { verification: { mode: "coding" } }).run("inspect");
+  assert.equal(result.taskState, "completed");
+  assert.equal(result.verification.required, false);
+  assert.equal(result.verification.verificationAttempts, 0);
+});
+
+test("coding verification emits task state changes", async () => {
+  const transitions: Array<{ from: string; to: string; reason: string }> = [];
+  let calls = 0;
+  const model: ModelClient = {
+    provider: "fake",
+    model: "fake-model",
+    capabilities: fakeCapabilities,
+    async generate(): Promise<ModelResponse> {
+      calls += 1;
+      if (calls === 1) return { message: { role: "assistant", content: "editing", toolCalls: [{ id: "patch", name: "apply_patch", input: {} }] } };
+      if (calls === 2) return { message: { role: "assistant", content: "testing", toolCalls: [{ id: "tests", name: "run_tests", input: {} }] } };
+      return { message: { role: "assistant", content: "done" } };
+    },
+  };
+  await new Agent(model, createCodingTools({ status: "passed", passed: true }), {
+    verification: { mode: "coding" },
+    onEvent: (event) => { if (event.type === "task_state_changed") transitions.push(event); },
+  }).run("change it");
+  assert.deepEqual(transitions.map(({ from, to }) => `${from}->${to}`), ["received->working", "working->verifying", "verifying->completed"]);
+  assert.match(transitions[1]?.reason ?? "", /write tool completed/);
+});

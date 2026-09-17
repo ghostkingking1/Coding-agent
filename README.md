@@ -120,3 +120,45 @@ npm run sandbox:build
 ```
 
 TypeScript 通过 `RustHelperSandboxBackend` 完成 capability 握手，并把规范化的 `ExecutionRequest` 以 base64 JSON 传给 helper。helper 会重新校验 workspace、cwd、资源限制和 `network: off`，校验失败时拒绝启动目标进程。未声明 `os.isolation` 时，上层要求强隔离会 fail closed。
+
+## 远程 MCP（默认关闭）
+
+当前版本支持作为 **远程 MCP Client** 连接外部 Server。远程连接不会从仓库自动发现配置，也不会因为配置文件存在而自动获得网络或凭据权限；只有用户级配置中 `enabled: true`、通过 bootstrap 审批并成功完成初始化的 Server 才会注册工具。
+
+用户级配置路径：
+
+- Windows：`%APPDATA%\\veil\\mcp.json`
+- macOS/Linux：`$XDG_CONFIG_HOME/veil/mcp.json`，未设置时为 `~/.config/veil/mcp.json`
+- 可用 `CODING_AGENT_MCP_CONFIG` 覆盖配置文件路径；`CODING_AGENT_MCP_SERVERS` 仅选择当前进程要启用的 Server，不回写配置。
+
+最小配置示例：
+
+```json
+{
+  "servers": [
+    {
+      "id": "docs",
+      "endpoint": "https://mcp.example.com/mcp",
+      "enabled": true,
+      "remoteCapabilities": ["read"],
+      "oauth": { "clientId": "public-client", "scopes": ["mcp:read"] },
+      "timeoutMs": 10000,
+      "maxMessageBytes": 262144
+    }
+  ]
+}
+```
+
+远程 MCP 使用受限 Streamable HTTP，支持 `2026-07-28`、`2025-03-26` 和 `2024-11-05` 协议版本协商、JSON/SSE 响应、session ID、分页、超时、取消、并发和响应大小限制。默认只允许 HTTPS；开发用 HTTP 仅允许显式开启的 localhost/127.0.0.1 loopback endpoint。不会跟随跨 origin 重定向，也不会接受 URL 中的 token、secret 或 Authorization 参数。
+
+远程工具名称固定为 `mcp_<server-id>_<tool-name>`。远程 resources/prompts 仅作为受控工具结果返回，属于不可信外部数据，不会被提升为 system prompt。远程调用仍通过 ToolRegistry 的 capability 和审批策略；本机连接 endpoint 的 `network` capability 与 Server 声明的业务 capability 分开计算。
+
+凭据独立保存，不进入 transcript、SQLite audit event、工具 preview 或错误信息。交互式 CLI 支持：
+
+```text
+veil /mcp list
+veil /mcp login <server-id>
+veil /mcp logout <server-id>
+```
+
+OAuth 登录采用 Authorization Code + PKCE S256 与一次性 loopback 回调；非 TTY 环境默认拒绝需要用户确认的 bootstrap、OAuth 和远程副作用。

@@ -24,11 +24,21 @@ export interface HttpResponse {
   readonly requestId?: string;
 }
 
+/** 流式 HTTP 响应的元数据与受限字节流；调用方负责消费 body。 */
+export interface HttpStreamResponse {
+  readonly status: number;
+  readonly statusText: string;
+  readonly headers: Headers;
+  readonly body: AsyncIterable<Uint8Array>;
+  readonly requestId?: string;
+}
+
 /** provider adapter 依赖的最小 HTTP 抽象。 */
 export interface HttpTransport {
   request(request: HttpRequest): Promise<HttpResponse>;
   requestJson<T = unknown>(request: HttpRequest): Promise<T>;
   stream?(request: HttpRequest): AsyncIterable<string>;
+  requestStream?(request: HttpRequest): Promise<HttpStreamResponse>;
 }
 
 /** Fetch transport 的默认限制与可替换 fetch。 */
@@ -106,6 +116,47 @@ export class FetchHttpTransport implements HttpTransport {
       throw new ModelTransportError("invalid_json", "Model response is not valid JSON", {
         requestId: response.requestId,
       });
+    }
+  }
+
+  async requestStream(request: HttpRequest): Promise<HttpStreamResponse> {
+    const timeoutMs = request.timeoutMs ?? this.defaultTimeoutMs;
+    const maxBytes = request.maxResponseBytes ?? this.defaultMaxResponseBytes;
+    assertPositiveInteger(timeoutMs, "timeoutMs");
+    assertPositiveInteger(maxBytes, "maxResponseBytes");
+    if (request.signal?.aborted) throw abortedError();
+
+    const controller = new AbortController();
+    let timedOut = false;
+    const abort = () => controller.abort(request.signal?.reason);
+    request.signal?.addEventListener("abort", abort, { once: true });
+    const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
+    try {
+      const response = await this.fetch(request.url, { ...request.init, signal: controller.signal });
+      const requestId = findRequestId(response.headers);
+      if (!response.ok) {
+        await discardBody(response);
+        throw httpError(response.status, response.headers, requestId);
+      }
+      const body = response.body;
+      const cleanup = () => {
+        clearTimeout(timeout);
+        request.signal?.removeEventListener("abort", abort);
+      };
+      return {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+        requestId,
+        body: body ? limitedByteStream(body, maxBytes, requestId, controller, () => timedOut, cleanup) : (cleanup(), emptyByteStream()),
+      };
+    } catch (error) {
+      clearTimeout(timeout);
+      request.signal?.removeEventListener("abort", abort);
+      if (error instanceof ModelTransportError) throw error;
+      if (timedOut) throw timeoutError();
+      if (request.signal?.aborted) throw abortedError();
+      throw new ModelTransportError("network", "Model request failed before a response was received");
     }
   }
 
@@ -197,8 +248,50 @@ function httpError(status: number, headers: Headers, requestId?: string): ModelT
     status,
     retryAfterMs: code === "rate_limited" ? parseRetryAfter(headers.get("retry-after")) : undefined,
     requestId,
+    resourceMetadataUrl: parseResourceMetadataUrl(headers.get("www-authenticate")),
   });
 }
+
+function parseResourceMetadataUrl(value: string | null): string | undefined {
+  if (!value) return undefined;
+  const match = /resource_metadata\s*=\s*"([^"]+)"/i.exec(value);
+  if (!match?.[1]) return undefined;
+  try {
+    const url = new URL(match[1]);
+    if (url.protocol !== "https:" && !isLoopback(url.hostname)) return undefined;
+    return url.toString();
+  } catch { return undefined; }
+}
+
+function isLoopback(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
+}
+
+async function* limitedByteStream(body: ReadableStream<Uint8Array>, maxBytes: number, requestId: string | undefined, controller: AbortController, didTimeout: () => boolean, cleanup: () => void): AsyncIterable<Uint8Array> {
+  const reader = body.getReader();
+  let bytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      bytes += value.byteLength;
+      if (bytes > maxBytes) {
+        await reader.cancel();
+        throw responseTooLargeError(requestId);
+      }
+      yield value;
+    }
+  } catch (error) {
+    if (error instanceof ModelTransportError) throw error;
+    if (controller.signal.aborted) {
+      throw didTimeout() ? timeoutError() : controller.signal.reason instanceof Error ? controller.signal.reason : abortedError();
+    }
+    throw new ModelTransportError("network", "Model response stream failed");
+  } finally { reader.releaseLock(); cleanup(); }
+}
+
+async function* emptyByteStream(): AsyncIterable<Uint8Array> { /* 空响应仍提供稳定的可迭代接口。 */ }
 
 function httpErrorCode(status: number): ModelTransportErrorCode {
   if (status === 401) return "unauthorized";

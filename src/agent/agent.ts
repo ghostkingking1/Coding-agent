@@ -15,10 +15,18 @@ import type {
   AuditEvent,
 } from "./types.ts";
 import { ModelTransportError } from "../model/errors.ts";
+import { TaskStateMachine } from "./task-state-machine.ts";
 
 const DEFAULT_MAX_STEPS = 8;
 /** 未配置模型容量时采用保守上限；调用方可按 provider 的真实输入容量显式覆盖。 */
 const DEFAULT_CONTEXT_BUDGET = { maxInputTokens: 32_000 } as const;
+
+interface ToolExecutionOutcome {
+  readonly key: string;
+  readonly message: Extract<Message, { role: "tool" }>;
+  readonly succeeded: boolean;
+  readonly rawResult?: unknown;
+}
 
 /** 驱动模型、工具和消息上下文之间多轮交互的 Agent 执行器。 */
 export class Agent {
@@ -71,6 +79,10 @@ export class Agent {
   }
 
   private async executeRun(input: string, messages: Message[], changeTracker?: RunChangeTracker, runOptions: AgentRunOptions = {}): Promise<AgentResult> {
+    const verification = this.options.verification?.mode === "coding"
+      ? new TaskStateMachine(this.options.verification, (from, to, reason) => this.emit({ type: "task_state_changed", from, to, reason }))
+      : undefined;
+    await verification?.start();
     const resumed = runOptions.resumeCheckpoint !== undefined;
     if (!resumed && this.options.systemPrompt && !messages.some((message) => message.role === "system")) {
       messages.push({ role: "system", content: this.options.systemPrompt });
@@ -83,25 +95,29 @@ export class Agent {
     if (resumed && runOptions.resumeCheckpoint!.phase === "model") {
       const assistant = [...messages].reverse().find((message): message is Extract<Message, { role: "assistant" }> => message.role === "assistant");
       if (!assistant?.toolCalls?.length) throw new Error("Checkpoint model phase has no resumable tool calls");
-      await this.executePendingCalls(assistant.toolCalls, messages, step, changeTracker, runOptions, replayToolResults);
+      await this.executePendingCalls(assistant.toolCalls, messages, step, changeTracker, runOptions, replayToolResults, verification);
       step += 1;
     } else if (resumed && runOptions.resumeCheckpoint!.phase === "tool") {
       const assistantIndex = messages.map((message) => message.role).lastIndexOf("assistant");
       const assistant = messages[assistantIndex] as Extract<Message, { role: "assistant" }> | undefined;
       const resolved = new Set(messages.slice(assistantIndex + 1).filter((message): message is Extract<Message, { role: "tool" }> => message.role === "tool").map((message) => message.toolCallId));
       const pending = assistant?.toolCalls?.filter((call) => !resolved.has(call.id)) ?? [];
-      if (pending.length) await this.executePendingCalls(pending, messages, step, changeTracker, runOptions, replayToolResults);
+      if (pending.length) await this.executePendingCalls(pending, messages, step, changeTracker, runOptions, replayToolResults, verification);
       step += 1;
     }
 
     for (; step <= this.options.maxSteps; step += 1) {
       /** 每轮开始前检查取消信号，避免停止后的运行启动新的模型或工具操作。 */
       this.options.signal?.throwIfAborted();
+      await verification?.beginWork();
       await this.emit({ type: "model_started", step });
       let response: ModelResponse;
       try {
-        // input 已在 executeRun 开头写入完整 transcript；这里仅生成其模型视图，避免重复追加。
-        const context = await this.contextManager.compact(messages, this.options.contextBudget ?? DEFAULT_CONTEXT_BUDGET);
+        // 门禁提示只存在于本次模型视图，不写入 canonical transcript，避免污染 Session 恢复上下文。
+        const modelMessages: Message[] = verification?.requiresVerification
+          ? [...messages, { role: "system", content: "The workspace was modified, but verification has not passed. You must call run_tests before completing this task." }]
+          : messages;
+        const context = await this.contextManager.compact(modelMessages, this.options.contextBudget ?? DEFAULT_CONTEXT_BUDGET);
         const request = {
           messages: context.messages,
           tools: this.tools.listModelDefinitions(),
@@ -120,28 +136,33 @@ export class Agent {
 
       const calls = response.message.toolCalls ?? [];
       if (calls.length === 0) {
-        const diff = changeTracker ? await changeTracker.finish() : undefined;
-        const result = {
-          finalText: response.message.content,
-          messages: [...messages],
-          steps: step,
-          stopReason: "completed",
-          ...(diff ? { diff } : {}),
-          ...(runOptions.gitChangeTracker ? { gitChanges: await runOptions.gitChangeTracker.finish(diff) } : {}),
-        } as const;
-        await this.emit({ type: "run_finished", steps: result.steps, stopReason: result.stopReason });
-        return result;
+        if (verification?.requiresVerification) {
+          await verification.noteVerificationRequired();
+          if (!verification.isBlocked) continue;
+          return await this.finishResult(response.message.content, messages, step, "blocked", verification, changeTracker, runOptions);
+        }
+        await verification?.complete();
+        return await this.finishResult(response.message.content, messages, step, "completed", verification, changeTracker, runOptions);
       }
 
-      await this.executePendingCalls(calls, messages, step, changeTracker, runOptions, replayToolResults);
+      await this.executePendingCalls(calls, messages, step, changeTracker, runOptions, replayToolResults, verification);
+      if (verification?.isBlocked) return await this.finishResult(response.message.content, messages, step, "blocked", verification, changeTracker, runOptions);
     }
 
+    if (verification?.requiresVerification) await verification.block("maximum model steps reached before verification");
+    const stopReason = verification?.isBlocked ? "blocked" : "max_steps";
+    return await this.finishResult("", messages, this.options.maxSteps, stopReason, verification, changeTracker, runOptions);
+  }
+
+  private async finishResult(finalText: string, messages: readonly Message[], steps: number, stopReason: AgentResult["stopReason"], verification: TaskStateMachine | undefined, changeTracker: RunChangeTracker | undefined, runOptions: AgentRunOptions): Promise<AgentResult> {
     const diff = changeTracker ? await changeTracker.finish() : undefined;
     const result = {
-      finalText: "",
+      finalText,
       messages: [...messages],
-      steps: this.options.maxSteps,
-      stopReason: "max_steps",
+      steps,
+      stopReason,
+      taskState: verification?.state ?? (stopReason === "completed" ? "completed" : "working"),
+      verification: verification?.summary() ?? { required: false, writeObserved: false, verificationPassed: false, verificationAttempts: 0, repairAttempts: 0 },
       ...(diff ? { diff } : {}),
       ...(runOptions.gitChangeTracker ? { gitChanges: await runOptions.gitChangeTracker.finish(diff) } : {}),
     } as const;
@@ -191,21 +212,36 @@ export class Agent {
 
   private async audit(event: AuditEvent, sink = this.options.auditSink): Promise<void> { await sink?.record(event); }
 
-  private async executePendingCalls(calls: readonly ToolCall[], messages: Message[], step: number, changeTracker: RunChangeTracker | undefined, runOptions: AgentRunOptions, replayToolResults: ReadonlyMap<string, string>): Promise<void> {
+  private async executePendingCalls(calls: readonly ToolCall[], messages: Message[], step: number, changeTracker: RunChangeTracker | undefined, runOptions: AgentRunOptions, replayToolResults: ReadonlyMap<string, string>, verification?: TaskStateMachine): Promise<void> {
     const batchId = `${runOptions.runId ?? "run"}:${step}`;
     const parallelCount = calls.filter((call) => this.isParallelizable(call)).length;
     await this.emit({ type: "tool_batch_started", step, batchId, toolCallCount: calls.length, parallelCount });
     await this.audit({ sessionId: runOptions.sessionId, runId: runOptions.runId, eventType: "tool_batch_started", step, metadata: { toolCallCount: calls.length, parallelCount } }, runOptions.auditSink ?? this.options.auditSink);
     const results = await this.executeToolBatch(calls, messages, step, changeTracker, runOptions, replayToolResults);
     messages.push(...results.map(({ message }) => message));
+    for (const result of results) {
+      if (!verification || !result.succeeded) {
+        if (verification && !result.succeeded && this.tools.get(result.message.toolName)?.manifest?.verification) {
+          await verification.observeVerification(result.message.toolName, false);
+        }
+        continue;
+      }
+      const manifest = this.tools.get(result.message.toolName)?.manifest;
+      if (manifest?.capabilities.includes("write")) await verification.observeWrite(result.message.toolName);
+      if (manifest?.verification) {
+        let passed = false;
+        try { passed = manifest.verification.isSuccessful(result.rawResult); } catch { passed = false; }
+        await verification.observeVerification(result.message.toolName, passed);
+      }
+    }
     await checkpoint(runOptions, step, "tool", messages, results.map(({ key, message }) => ({ key, toolCallId: message.toolCallId, toolName: message.toolName, status: isToolErrorMessage(message) ? "failed" : "completed", result: message.content })));
     const failed = results.filter(({ message }) => isToolErrorMessage(message)).length;
     await this.emit({ type: "tool_batch_finished", step, batchId, succeeded: results.length - failed, failed });
     await this.audit({ sessionId: runOptions.sessionId, runId: runOptions.runId, eventType: "tool_batch_finished", step, status: failed ? "partial_failure" : "completed", metadata: { succeeded: results.length - failed, failed } }, runOptions.auditSink ?? this.options.auditSink);
   }
 
-  private async executeToolBatch(calls: readonly ToolCall[], messages: readonly Message[], step: number, changeTracker: RunChangeTracker | undefined, runOptions: AgentRunOptions, replayToolResults: ReadonlyMap<string, string>): Promise<readonly { key: string; message: Extract<Message, { role: "tool" }> }[]> {
-    const results: Array<{ key: string; message: Extract<Message, { role: "tool" }> }> = [];
+  private async executeToolBatch(calls: readonly ToolCall[], messages: readonly Message[], step: number, changeTracker: RunChangeTracker | undefined, runOptions: AgentRunOptions, replayToolResults: ReadonlyMap<string, string>): Promise<readonly ToolExecutionOutcome[]> {
+    const results: ToolExecutionOutcome[] = [];
     let wave: ToolCall[] = [];
     const flush = async () => {
       if (wave.length === 0) return;
@@ -228,12 +264,15 @@ export class Agent {
     return calls.map((call) => results.find((result) => result.message.toolCallId === call.id)!).filter(Boolean);
   }
 
-  private async executeOnePendingCall(call: ToolCall, messages: readonly Message[], step: number, changeTracker: RunChangeTracker | undefined, runOptions: AgentRunOptions, replayToolResults: ReadonlyMap<string, string>): Promise<{ key: string; message: Extract<Message, { role: "tool" }> }> {
+  private async executeOnePendingCall(call: ToolCall, messages: readonly Message[], step: number, changeTracker: RunChangeTracker | undefined, runOptions: AgentRunOptions, replayToolResults: ReadonlyMap<string, string>): Promise<ToolExecutionOutcome> {
     await this.emit({ type: "tool_requested", step, toolName: call.name, toolCallId: call.id });
     const key = `${runOptions.runId ?? "run"}:${step}:${call.id}`;
     const cached = replayToolResults.get(key);
-    const message = cached === undefined ? await this.executeToolCall(call, messages, step, changeTracker, runOptions) : { role: "tool", content: cached, toolCallId: call.id, toolName: call.name } as const;
-    return { key, message };
+    if (cached !== undefined) {
+      const message = { role: "tool", content: cached, toolCallId: call.id, toolName: call.name } as const;
+      return { key, message, succeeded: !isToolErrorMessage(message), rawResult: parseCachedToolResult(cached) };
+    }
+    return { key, ...(await this.executeToolCall(call, messages, step, changeTracker, runOptions)) };
   }
 
   private isParallelizable(call: ToolCall): boolean { return this.tools.get(call.name)?.manifest?.parallelizable === true; }
@@ -247,8 +286,8 @@ export class Agent {
     });
   }
 
-  /** 执行单个工具调用，并把成功或失败结果转换为工具消息。 */
-  private async executeToolCall(call: ToolCall, messages: readonly Message[], step: number, changeTracker?: RunChangeTracker, runOptions: AgentRunOptions = {}): Promise<Extract<Message, { role: "tool" }>> {
+  /** 执行单个工具调用，并保留原始结果供验证器判断。 */
+  private async executeToolCall(call: ToolCall, messages: readonly Message[], step: number, changeTracker?: RunChangeTracker, runOptions: AgentRunOptions = {}): Promise<Omit<ToolExecutionOutcome, "key">> {
     try {
       const result = await this.tools.execute(call.name, call.input, {
         messages,
@@ -262,23 +301,18 @@ export class Agent {
       await this.emit({ type: "tool_completed", step, toolName: call.name, toolCallId: call.id });
       await this.audit({ sessionId: runOptions.sessionId, runId: runOptions.runId, eventType: "tool_call", step, toolCallId: call.id, toolName: call.name, status: "completed" }, runOptions.auditSink ?? this.options.auditSink);
       return {
-        role: "tool",
-        content: await this.serializeToolResult(result, runOptions),
-        toolCallId: call.id,
-        toolName: call.name,
+        message: { role: "tool", content: await this.serializeToolResult(result, runOptions), toolCallId: call.id, toolName: call.name },
+        succeeded: true,
+        rawResult: result,
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       await this.emit({ type: "tool_failed", step, toolName: call.name, toolCallId: call.id, error: message });
       await this.audit({ sessionId: runOptions.sessionId, runId: runOptions.runId, eventType: "tool_call", step, toolCallId: call.id, toolName: call.name, status: "failed", metadata: { error: message.slice(0, 1024) } }, runOptions.auditSink ?? this.options.auditSink);
-      return {
-        role: "tool",
-        content: JSON.stringify({ error: message }),
-        toolCallId: call.id,
-        toolName: call.name,
-      };
+      return { message: { role: "tool", content: JSON.stringify({ error: message }), toolCallId: call.id, toolName: call.name }, succeeded: false };
     }
   }
+
 
   async exportContextCheckpoint(sessionId: string, messages: readonly Message[], budget?: import("./types.ts").ContextBudget): Promise<import("./types.ts").ContextCheckpoint | undefined> {
     return this.contextManager.exportCheckpoint?.(sessionId, messages, budget);
@@ -305,6 +339,10 @@ export class Agent {
 async function checkpoint(runOptions: AgentRunOptions, step: number, phase: "model" | "tool", messages: readonly Message[], toolResults: readonly { key: string; toolCallId: string; toolName: string; status: "completed" | "failed"; result: string }[]): Promise<void> {
   if (!runOptions.checkpoint || !runOptions.sessionId || !runOptions.runId) return;
   await runOptions.checkpoint.save({ sessionId: runOptions.sessionId, runId: runOptions.runId, step, phase, messages: [...messages], toolResults, updatedAt: new Date().toISOString() });
+}
+
+function parseCachedToolResult(content: string): unknown {
+  try { return JSON.parse(content) as unknown; } catch { return content; }
 }
 
 /** 将工具结果稳定地转换为可放入消息上下文的文本。 */
