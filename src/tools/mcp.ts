@@ -1,7 +1,9 @@
 import crypto from "node:crypto";
 import { z } from "zod";
 import type { ChildProcess } from "node:child_process";
-import type { JsonObject, JsonSchema, Tool, ToolCapability, ToolContext } from "../agent/types.ts";
+import type { JsonObject, JsonSchema, JsonValue, Tool, ToolCapability, ToolContext } from "../agent/types.ts";
+import type { McpClient, McpListedTool, McpPrompt, McpPromptResult, McpResource, McpResourceResult, McpToolResult } from "./mcp-types.ts";
+export type { McpClient, McpListedTool, McpPrompt, McpPromptResult, McpResource, McpResourceResult, McpToolResult } from "./mcp-types.ts";
 import { defineTool } from "./tool-schema.ts";
 import type { SandboxBackend } from "./sandbox.ts";
 import { WorkspacePolicy } from "./security.ts";
@@ -30,13 +32,10 @@ export interface McpToolPreview {
   readonly mcpToolName: string;
   readonly arguments: JsonObject;
   readonly capabilitySnapshot: { readonly backend: string; readonly version: string; readonly capabilities: readonly string[] };
+  readonly endpointOrigin?: string;
+  readonly operation?: string;
   /** 覆盖 Server、工具、参数和能力快照的审批绑定摘要。 */
   readonly requestDigest: string;
-}
-
-export interface McpToolResult {
-  readonly content: readonly unknown[];
-  readonly isError: boolean;
 }
 
 interface NormalizedConfig extends Required<Omit<McpStdioServerConfig, "args" | "timeoutMs" | "maxMessageBytes" | "maxToolCount">> {
@@ -47,7 +46,6 @@ interface NormalizedConfig extends Required<Omit<McpStdioServerConfig, "args" | 
   readonly maxToolCount: number;
 }
 
-interface McpListedTool { readonly name: string; readonly description?: string; readonly inputSchema?: JsonSchema; }
 interface RpcSuccess { readonly jsonrpc: "2.0"; readonly id: number; readonly result: unknown; }
 
 /** MCP 初始化、发现或调用失败时统一拒绝，防止协议异常退化为宿主进程访问。 */
@@ -72,10 +70,30 @@ export class McpStdioClient {
     sandbox.assertAvailable(["process.spawn", "workspace.fs", "network.off", "os.isolation"]);
   }
 
-  async listTools(): Promise<readonly McpListedTool[]> {
-    await this.initialize();
+  async connect(signal?: AbortSignal): Promise<void> {
+    await this.initialize(signal);
+  }
+
+  async listResources(_signal?: AbortSignal): Promise<readonly McpResource[]> {
+    return [];
+  }
+
+  async readResource(_uri: string, _signal?: AbortSignal): Promise<McpResourceResult> {
+    throw new McpProtocolError("MCP stdio server does not expose resources");
+  }
+
+  async listPrompts(_signal?: AbortSignal): Promise<readonly McpPrompt[]> {
+    return [];
+  }
+
+  async getPrompt(_name: string, _args?: JsonObject, _signal?: AbortSignal): Promise<McpPromptResult> {
+    throw new McpProtocolError("MCP stdio server does not expose prompts");
+  }
+
+  async listTools(signal?: AbortSignal): Promise<readonly McpListedTool[]> {
+    await this.initialize(signal);
     if (this.tools) return this.tools;
-    const result = await this.request("tools/list", {});
+    const result = await this.request("tools/list", {}, signal);
     if (!isRecord(result) || !Array.isArray(result.tools) || result.tools.length > this.config.maxToolCount) throw new McpProtocolError("Invalid or oversized MCP tools/list result");
     const names = new Set<string>();
     this.tools = result.tools.map((value) => parseListedTool(value, names));
@@ -83,7 +101,7 @@ export class McpStdioClient {
   }
 
   async callTool(name: string, args: JsonObject, signal?: AbortSignal): Promise<McpToolResult> {
-    const tools = await this.listTools();
+    const tools = await this.listTools(signal);
     if (!tools.some((tool) => tool.name === name)) throw new McpProtocolError(`MCP tool is not declared by server: ${name}`);
     const result = await this.request("tools/call", { name, arguments: args }, signal);
     if (!isRecord(result) || !Array.isArray(result.content)) throw new McpProtocolError("Invalid MCP tools/call result");
@@ -107,10 +125,10 @@ export class McpStdioClient {
     });
   }
 
-  private async initialize(): Promise<void> {
+  private async initialize(signal?: AbortSignal): Promise<void> {
     if (this.initialized) return;
     this.start();
-    const result = await this.request("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "coding-agent", version: "0.1.0" } });
+    const result = await this.request("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "coding-agent", version: "0.1.0" } }, signal);
     if (!isRecord(result) || typeof result.protocolVersion !== "string" || !isRecord(result.serverInfo) || typeof result.serverInfo.name !== "string") throw new McpProtocolError("Invalid MCP initialize response");
     this.notify("notifications/initialized", {});
     this.initialized = true;
@@ -168,7 +186,8 @@ export class McpStdioClient {
 }
 
 /** 发现 Server 的工具并以稳定的前缀注册，避免与内建工具发生名称冲突。 */
-export async function createMcpTools(client: McpStdioClient): Promise<readonly Tool[]> {
+export async function createMcpTools(client: McpClient): Promise<readonly Tool[]> {
+  if (client.supportsTools === false) return [];
   const listed = await client.listTools();
   return listed.map((listedTool) => {
     const inputSchema = z.record(z.string(), z.unknown());
@@ -179,11 +198,11 @@ export async function createMcpTools(client: McpStdioClient): Promise<readonly T
       inputSchema,
       modelInputSchema: listedTool.inputSchema ?? { type: "object", additionalProperties: true },
       preview(input): McpToolPreview {
-        const base = { serverId: client.serverId, serverDigest: client.serverDigest, mcpToolName: listedTool.name, arguments: canonicalObject(input), capabilitySnapshot: client.capabilitySnapshot };
+        const base = { serverId: client.serverId, serverDigest: client.serverDigest, mcpToolName: listedTool.name, arguments: canonicalObject(input), capabilitySnapshot: client.capabilitySnapshot, ...(client.endpointOrigin ? { endpointOrigin: client.endpointOrigin, operation: "tools/call" } : {}) };
         return { ...base, requestDigest: digest(base) };
       },
       async execute(input, context: ToolContext) {
-        const base = { serverId: client.serverId, serverDigest: client.serverDigest, mcpToolName: listedTool.name, arguments: canonicalObject(input), capabilitySnapshot: client.capabilitySnapshot };
+        const base = { serverId: client.serverId, serverDigest: client.serverDigest, mcpToolName: listedTool.name, arguments: canonicalObject(input), capabilitySnapshot: client.capabilitySnapshot, ...(client.endpointOrigin ? { endpointOrigin: client.endpointOrigin, operation: "tools/call" } : {}) };
         const requestDigest = digest(base);
         try {
           const result = await client.callTool(listedTool.name, base.arguments, context.signal);
@@ -212,3 +231,96 @@ function isRecord(value: unknown): value is Record<string, unknown> { return typ
 function isRpcSuccess(value: unknown): value is RpcSuccess { return isRecord(value) && value.jsonrpc === "2.0" && typeof value.id === "number" && "result" in value; }
 function canonicalObject(value: Record<string, unknown>): JsonObject { return Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right))) as JsonObject; }
 function digest(value: unknown): string { return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex"); }
+
+
+/** 为远程 resources 提供分页发现和受控读取入口；内容始终作为不可信 tool result 返回。 */
+export async function createMcpResourceTools(client: McpClient): Promise<readonly Tool[]> {
+  if (client.supportsResources === false) return [];
+  return [
+    defineTool({
+      name: `mcp_${client.serverId}_list_resources`,
+      description: `List resources exposed by MCP server ${client.serverId}`,
+      capabilities: client.capabilities,
+      inputSchema: z.object({}).strict(),
+      modelInputSchema: { type: "object", additionalProperties: false },
+      preview: () => surfacePreview(client, "resources/list"),
+      execute: async (_input, context) => executeMcpOperation(client, "resources/list", {}, context, () => client.listResources(context.signal)),
+    }),
+    defineTool({
+      name: `mcp_${client.serverId}_read_resource`,
+      description: `Read a resource from MCP server ${client.serverId}`,
+      capabilities: client.capabilities,
+      inputSchema: z.object({ uri: z.string().min(1).max(4096) }).strict(),
+      modelInputSchema: { type: "object", properties: { uri: { type: "string", minLength: 1, maxLength: 4096 } }, required: ["uri"], additionalProperties: false },
+      preview: (input) => surfacePreview(client, "resources/read", { uri: input.uri }),
+      execute: async (input, context) => executeMcpOperation(client, "resources/read", { uri: input.uri }, context, () => client.readResource(input.uri, context.signal)),
+    }),
+  ];
+}
+
+/** 为远程 prompts 提供受控发现和获取入口，不把远程返回内容提升为 system prompt。 */
+export async function createMcpPromptTools(client: McpClient): Promise<readonly Tool[]> {
+  if (client.supportsPrompts === false) return [];
+  return [
+    defineTool({
+      name: `mcp_${client.serverId}_list_prompts`,
+      description: `List prompts exposed by MCP server ${client.serverId}`,
+      capabilities: client.capabilities,
+      inputSchema: z.object({}).strict(),
+      modelInputSchema: { type: "object", additionalProperties: false },
+      preview: () => surfacePreview(client, "prompts/list"),
+      execute: async (_input, context) => executeMcpOperation(client, "prompts/list", {}, context, () => client.listPrompts(context.signal)),
+    }),
+    defineTool({
+      name: `mcp_${client.serverId}_get_prompt`,
+      description: `Get a prompt from MCP server ${client.serverId}`,
+      capabilities: client.capabilities,
+      inputSchema: z.object({ name: z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,127}$/), arguments: z.record(z.string(), z.unknown()).optional() }).strict(),
+      modelInputSchema: { type: "object", properties: { name: { type: "string", pattern: "^[A-Za-z][A-Za-z0-9_-]{0,127}$" }, arguments: { type: "object", additionalProperties: true } }, required: ["name"], additionalProperties: false },
+      preview: (input) => surfacePreview(client, "prompts/get", { name: input.name, ...(input.arguments ? { arguments: toJsonObject(input.arguments) } : {}) }),
+      execute: async (input, context) => executeMcpOperation(client, "prompts/get", { name: input.name, ...(input.arguments ? { arguments: toJsonObject(input.arguments) } : {}) }, context, () => client.getPrompt(input.name, toJsonObject(input.arguments ?? {}), context.signal)),
+    }),
+  ];
+}
+
+export async function createMcpAgentTools(client: McpClient, options: { readonly includeResources?: boolean; readonly includePrompts?: boolean } = {}): Promise<readonly Tool[]> {
+  const tools: Tool[] = [...await createMcpTools(client)];
+  if (options.includeResources && client.supportsResources !== false) { await client.listResources(); tools.push(...await createMcpResourceTools(client)); }
+  if (options.includePrompts && client.supportsPrompts !== false) { await client.listPrompts(); tools.push(...await createMcpPromptTools(client)); }
+  return tools;
+}
+
+function surfacePreview(client: McpClient, operation: string, target: JsonObject = {}): McpToolPreview & { readonly operation: string } {
+  const base = { serverId: client.serverId, serverDigest: client.serverDigest, mcpToolName: operation, arguments: canonicalObject(target), capabilitySnapshot: client.capabilitySnapshot, operation, ...(client.endpointOrigin ? { endpointOrigin: client.endpointOrigin } : {}) };
+  return { ...base, requestDigest: digest(base) };
+}
+
+
+
+async function executeMcpOperation<T>(client: McpClient, operation: string, target: JsonObject, context: ToolContext, action: () => Promise<T>): Promise<T> {
+  const requestDigest = digest({ serverId: client.serverId, serverDigest: client.serverDigest, endpointOrigin: client.endpointOrigin, operation, arguments: canonicalObject(target), capabilitySnapshot: client.capabilitySnapshot });
+  try {
+    const result = await action();
+    await context.auditSink?.record({ sessionId: context.sessionId, runId: context.runId, eventType: "mcp_operation", toolName: `mcp_${client.serverId}_${operation.replace("/", "_")}`, status: "completed", metadata: { serverId: client.serverId, serverDigest: client.serverDigest, ...(client.endpointOrigin ? { endpointOrigin: client.endpointOrigin } : {}), operation, requestDigest } });
+    return result;
+  } catch (error) {
+    await context.auditSink?.record({ sessionId: context.sessionId, runId: context.runId, eventType: "mcp_operation", toolName: `mcp_${client.serverId}_${operation.replace("/", "_")}`, status: "failed", metadata: { serverId: client.serverId, serverDigest: client.serverDigest, ...(client.endpointOrigin ? { endpointOrigin: client.endpointOrigin } : {}), operation, requestDigest, errorCode: error instanceof Error ? error.name : "unknown" } });
+    throw error;
+  }
+}
+
+function toJsonObject(value: Record<string, unknown>): JsonObject {
+  const result: Record<string, JsonValue> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (!isJsonValue(item)) throw new McpProtocolError(`Invalid JSON value in MCP prompt arguments: ${key}`);
+    result[key] = item;
+  }
+  return result;
+}
+
+function isJsonValue(value: unknown): value is JsonValue {
+  if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") return true;
+  if (Array.isArray(value)) return value.every(isJsonValue);
+  if (isRecord(value)) return Object.values(value).every(isJsonValue);
+  return false;
+}
