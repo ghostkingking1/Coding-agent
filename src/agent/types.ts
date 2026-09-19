@@ -182,6 +182,10 @@ export interface ContextCheckpoint {
   readonly sourcePrefixHash: string;
   readonly summarySegments: readonly ContextSummary[];
   readonly retainedTailStart: number;
+  /** 已经压缩并可直接作为恢复基线的模型视图，避免重新装载完整 transcript。 */
+  readonly resumeMessages?: readonly Message[];
+  /** checkpoint 创建时已提交的数据库消息总数；恢复只读取此序号之后的增量。 */
+  readonly sourceMessageCount?: number;
   readonly updatedAt: string;
 }
 
