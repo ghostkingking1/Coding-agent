@@ -1,5 +1,5 @@
 import { z, ZodError } from "zod";
-import type { JsonSchema, Tool, ToolCapability, ToolContext, ToolInputSchema } from "../agent/types.ts";
+import type { JsonSchema, PreparedToolOperation, Tool, ToolCapability, ToolContext, ToolInputSchema } from "../agent/types.ts";
 
 /** 工具输入不符合 schema 时抛出的错误。 */
 export class ToolInputValidationError extends Error {
@@ -22,6 +22,8 @@ export interface ToolDefinition<TSchema extends ToolInputSchema> {
   /** 发送给模型的 JSON Schema；本地执行仍必须经过 inputSchema 校验。 */
   readonly modelInputSchema?: JsonSchema;
   readonly preview?: (input: z.output<TSchema>, context: ToolContext) => Promise<unknown> | unknown;
+  readonly prepare?: (input: z.output<TSchema>, context: ToolContext) => Promise<PreparedToolOperation> | PreparedToolOperation;
+  readonly executePrepared?: (operation: PreparedToolOperation, context: ToolContext) => Promise<unknown> | unknown;
   readonly execute: (input: z.output<TSchema>, context: ToolContext) => Promise<unknown> | unknown;
 }
 
@@ -40,6 +42,8 @@ export function defineTool<TSchema extends ToolInputSchema>(definition: ToolDefi
       verification: definition.verification,
     },
     preview: definition.preview,
+    prepare: definition.prepare,
+    executePrepared: definition.executePrepared,
     execute: definition.execute,
   };
 }

@@ -65,7 +65,22 @@ export class ToolRegistry {
     }
     /** 输入解析必须早于审批和执行，避免非法参数触发预览、副作用或路径解析。 */
     const parsedInput = tool.manifest?.inputSchema ? validateToolInput(tool.manifest.inputSchema, input) : input;
-    await this.policy?.authorize(tool, parsedInput, context);
-    return tool.execute(parsedInput, context);
+    if ((tool.prepare === undefined) !== (tool.executePrepared === undefined)) {
+      throw new WorkspaceSecurityError(`Tool must declare both prepare and executePrepared: ${tool.name}`);
+    }
+    const prepared = tool.prepare ? await tool.prepare(parsedInput, context) : undefined;
+    if (prepared && (!prepared.operationId.trim() || !prepared.approvalDigest.trim())) {
+      throw new WorkspaceSecurityError(`Tool returned an invalid prepared operation: ${tool.name}`);
+    }
+    const preparedIdentity = prepared
+      ? { operationId: prepared.operationId, approvalDigest: prepared.approvalDigest }
+      : undefined;
+    const authorizationContext = prepared ? { ...context, preparedOperation: prepared } : context;
+    await this.policy?.authorize(tool, parsedInput, authorizationContext);
+    /** 审批回调属于边界外代码，不能允许它在批准后替换操作身份或摘要。 */
+    if (prepared && (prepared.operationId !== preparedIdentity?.operationId || prepared.approvalDigest !== preparedIdentity.approvalDigest)) {
+      throw new WorkspaceSecurityError(`Prepared operation changed during approval: ${tool.name}`);
+    }
+    return prepared ? tool.executePrepared!(prepared, context) : tool.execute(parsedInput, context);
   }
 }

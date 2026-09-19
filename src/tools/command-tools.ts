@@ -9,7 +9,7 @@ import { defineTool } from "./tool-schema.ts";
 import { executionRequestDigest, ProcessSandboxBackend, SandboxUnavailableError, UnavailableSandboxBackend, canonicalNetworkPolicy, type ExecutionRequest, type SandboxBackend, type ExecutionNetworkPolicy } from "./sandbox.ts";
 import { decideSandboxPolicy, type PolicyDecision, type RiskClass, type SandboxPolicy } from "./sandbox-policy.ts";
 import crypto from "node:crypto";
-import type { Tool, ToolContext } from "../agent/types.ts";
+import type { PreparedToolOperation, Tool, ToolContext } from "../agent/types.ts";
 
 /** run_command 工具的安全和资源限制配置。 */
 export interface RunCommandToolOptions {
@@ -87,6 +87,7 @@ interface PlannedCommand {
   readonly request: ExecutionRequest;
   readonly sandbox: SandboxBackend;
   readonly policyDecision: PolicyDecision;
+  readonly spawnPlan: SpawnPlan;
 }
 
 interface SpawnPlan {
@@ -141,6 +142,18 @@ export function createRunCommandTool(policy: WorkspacePolicy, options: RunComman
     preview(input) {
       return planCommand(policy, limits, input).preview;
     },
+    prepare(input) {
+      const plan = planCommand(policy, limits, input);
+      return {
+        operationId: `command_${plan.request.executionId}`,
+        preview: plan.preview,
+        approvalDigest: plan.preview.approvalDigest,
+        payload: plan,
+      };
+    },
+    executePrepared(operation, context) {
+      return runPlannedCommand(preparedCommand(operation), context);
+    },
     async execute(input, context) {
       const plan = planCommand(policy, limits, input);
       return runPlannedCommand(plan, context);
@@ -189,11 +202,13 @@ function planCommand(policy: WorkspacePolicy, options: NormalizedRunCommandOptio
   const network = normalizeRequestedNetwork(input.network, options.allowedNetwork);
   if (network.mode === "allowlist") injectProxyEnvironment(env, network);
   const envKeys = Object.keys(env).sort((a, b) => a.localeCompare(b));
+  const spawnPlan = planSpawnInput(input.command, input.args, cwdPath, env);
   const request: ExecutionRequest = {
     executionId: crypto.randomUUID(),
     workspaceRoot: policy.root,
-    executable: input.command,
-    args: input.args,
+    executable: spawnPlan.command,
+    args: spawnPlan.args,
+    windowsVerbatimArguments: spawnPlan.windowsVerbatimArguments,
     cwd: cwdPath,
     env: Object.fromEntries(Object.entries(env).filter((entry): entry is [string, string] => entry[1] !== undefined).sort(([a], [b]) => a.localeCompare(b))),
     timeoutMs,
@@ -221,6 +236,7 @@ function planCommand(policy: WorkspacePolicy, options: NormalizedRunCommandOptio
     request,
     sandbox: options.sandbox,
     policyDecision,
+    spawnPlan,
     preview: {
       command: input.command,
       args: input.args,
@@ -238,6 +254,22 @@ function planCommand(policy: WorkspacePolicy, options: NormalizedRunCommandOptio
       sandbox: options.sandbox.capabilities,
     },
   };
+}
+
+function preparedCommand(operation: PreparedToolOperation): PlannedCommand {
+  const plan = operation.payload as PlannedCommand | undefined;
+  const currentDecision = plan?.request && plan.sandbox
+    ? decideSandboxPolicy(plan.request, plan.sandbox.capabilities.capabilities)
+    : undefined;
+  if (!plan || !plan.request || !plan.preview || plan.preview.approvalDigest !== operation.approvalDigest
+    || executionRequestDigest(plan.request) !== plan.preview.requestDigest
+    || currentDecision?.approvalDigest !== operation.approvalDigest
+    || plan.spawnPlan.command !== plan.request.executable
+    || plan.spawnPlan.windowsVerbatimArguments !== plan.request.windowsVerbatimArguments
+    || JSON.stringify(plan.spawnPlan.args) !== JSON.stringify(plan.request.args)) {
+    throw new Error("Prepared command payload does not match its approval digest");
+  }
+  return plan;
 }
 
 function normalizeRequestedNetwork(
@@ -329,7 +361,7 @@ async function runPlannedCommand(plan: PlannedCommand, context: ToolContext): Pr
   let settled = false;
   let stopRequested = false;
   let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
-  const spawnPlan = planSpawn(plan);
+  const spawnPlan = plan.spawnPlan;
 
   return new Promise<RunCommandResult>((resolve) => {
     void context.auditSink?.record({
@@ -431,16 +463,16 @@ async function runPlannedCommand(plan: PlannedCommand, context: ToolContext): Pr
   });
 }
 
-function planSpawn(plan: PlannedCommand): SpawnPlan {
-  if (process.platform !== "win32") return { command: plan.preview.command, args: plan.preview.args };
-  const resolved = resolveWindowsCommand(plan.preview.command, plan.cwdPath, plan.env);
+function planSpawnInput(command: string, args: readonly string[], cwd: string, env: NodeJS.ProcessEnv): SpawnPlan {
+  if (process.platform !== "win32") return { command, args };
+  const resolved = resolveWindowsCommand(command, cwd, env);
   if (!resolved || !/\.(?:bat|cmd)$/i.test(resolved)) {
-    return { command: resolved ?? plan.preview.command, args: plan.preview.args };
+    return { command: resolved ?? command, args };
   }
   /** Windows 批处理文件必须经由 cmd.exe；所有片段都显式引用，避免把整条命令交给模型拼接。 */
   return {
     command: findEnvKey(process.env, "ComSpec") ? process.env[findEnvKey(process.env, "ComSpec") as string] as string : "cmd.exe",
-    args: ["/d", "/s", "/c", quoteWindowsCommand([resolved, ...plan.preview.args])],
+    args: ["/d", "/s", "/c", quoteWindowsCommand([resolved, ...args])],
     windowsVerbatimArguments: true,
   };
 }

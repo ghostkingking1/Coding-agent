@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import crypto from "node:crypto";
 import test from "node:test";
 import { ApprovalDeniedError, SecurityPolicy, WorkspacePolicy, WorkspaceSecurityError } from "../../src/tools/security.ts";
 import { ToolRegistry } from "../../src/tools/tool-registry.ts";
 import { createWorkspaceTools } from "../../src/tools/workspace-tools.ts";
-import type { PatchPreview, PatchResult } from "../../src/tools/patch-tools.ts";
+import { createPatchTool, PreparedOperationStaleError, recoverPatchTransactions, type PatchPreview, type PatchResult } from "../../src/tools/patch-tools.ts";
 import { RunChangeTracker } from "../../src/agent/run-diff.ts";
 
 async function withWorkspace(run: (root: string) => Promise<void>): Promise<void> {
@@ -138,5 +139,78 @@ test("apply_patch records originals only when execution is approved", async () =
     const result = await tracker.finish();
     assert.match(result.text, /-const answer = 41;/);
     assert.match(result.text, /\+const answer = 42;/);
+  });
+});
+
+test("apply_patch rejects a file changed while approval is pending", async () => {
+  await withWorkspace(async (root) => {
+    const file = path.join(root, "app.ts");
+    await fs.writeFile(file, "const answer = 41;\n");
+    const registry = new ToolRegistry(new SecurityPolicy({
+      approval: {
+        async requestApproval() {
+          await fs.writeFile(file, "const answer = 99;\n");
+          return true;
+        },
+      },
+    })).register(createPatchTool(new WorkspacePolicy({ root })));
+
+    await assert.rejects(() => registry.execute("apply_patch", {
+      changes: [{ path: "app.ts", find: "41", replaceWith: "42" }],
+    }, { messages: [] }), PreparedOperationStaleError);
+    assert.equal(await fs.readFile(file, "utf8"), "const answer = 99;\n");
+  });
+});
+
+test("multi-file patch restores earlier files when a later rename fails", async () => {
+  await withWorkspace(async (root) => {
+    const first = path.join(root, "first.ts");
+    const second = path.join(root, "second.ts");
+    await fs.writeFile(first, "first old\n");
+    await fs.writeFile(second, "second old\n");
+    let backupRenames = 0;
+    let failed = false;
+    const patch = createPatchTool(new WorkspacePolicy({ root }), {
+      async rename(source, target) {
+        if (target.includes(".veil-bak-") && ++backupRenames === 2 && !failed) {
+          failed = true;
+          throw Object.assign(new Error("injected rename failure"), { code: "EIO" });
+        }
+        await fs.rename(source, target);
+      },
+    });
+
+    await assert.rejects(() => Promise.resolve(patch.execute({ changes: [
+      { path: "first.ts", find: "old", replaceWith: "new" },
+      { path: "second.ts", find: "old", replaceWith: "new" },
+    ] }, { messages: [] })), /injected rename failure/);
+    assert.equal(await fs.readFile(first, "utf8"), "first old\n");
+    assert.equal(await fs.readFile(second, "utf8"), "second old\n");
+  });
+});
+
+test("explicit patch recovery restores an interrupted transaction", async () => {
+  await withWorkspace(async (root) => {
+    const transactionId = crypto.randomUUID();
+    const target = path.join(root, "app.ts");
+    const temporary = `${target}.veil-tmp-${transactionId}`;
+    const backup = `${target}.veil-bak-${transactionId}`;
+    await fs.writeFile(target, "new\n");
+    await fs.writeFile(backup, "old\n");
+    await fs.writeFile(temporary, "new\n");
+    const workspaceId = crypto.createHash("sha256").update(path.resolve(root)).digest("hex");
+    const directory = path.join(os.tmpdir(), "coding-agent-patch-journal", workspaceId);
+    await fs.mkdir(directory, { recursive: true });
+    await fs.writeFile(path.join(directory, `${transactionId}.json`), JSON.stringify({
+      version: 1,
+      transactionId,
+      workspaceRoot: root,
+      entries: [{ target, temporary, backup, state: "applied" }],
+    }));
+
+    assert.equal(await recoverPatchTransactions(root), 1);
+    assert.equal(await fs.readFile(target, "utf8"), "old\n");
+    await assert.rejects(() => fs.stat(backup));
+    await assert.rejects(() => fs.stat(temporary));
   });
 });

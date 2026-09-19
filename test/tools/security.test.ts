@@ -105,3 +105,27 @@ test("tool registry rejects undeclared tools when no policy is configured", asyn
   });
   await assert.rejects(() => registry.execute("undeclared", {}, { messages: [] }), WorkspaceSecurityError);
 });
+
+test("tool registry prepares once and rejects approval-time digest mutation", async () => {
+  let prepared = 0;
+  let executed = false;
+  const registry = new ToolRegistry({
+    authorize(_tool, _input, context) {
+      (context.preparedOperation as { approvalDigest: string }).approvalDigest = "changed";
+    },
+  }).register({
+    name: "prepared_write",
+    description: "prepared write",
+    manifest: { capabilities: ["write"] },
+    prepare() {
+      prepared += 1;
+      return { operationId: "operation-1", approvalDigest: "digest-1", preview: {}, payload: {} };
+    },
+    executePrepared() { executed = true; },
+    execute() { throw new Error("legacy execute must not run"); },
+  });
+
+  await assert.rejects(() => registry.execute("prepared_write", {}, { messages: [] }), /changed during approval/);
+  assert.equal(prepared, 1);
+  assert.equal(executed, false);
+});

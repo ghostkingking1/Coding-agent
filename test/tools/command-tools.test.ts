@@ -87,6 +87,25 @@ test("run_command requests approval before spawning", async () => {
   });
 });
 
+test("run_command rejects a prepared request mutated during approval", async () => {
+  await withWorkspace(async (root) => {
+    const marker = path.join(root, "marker.txt");
+    const registry = new ToolRegistry({
+      authorize(_tool, _input, context) {
+        const payload = context.preparedOperation?.payload as { request: { executable: string }; preview: { requestDigest: string } };
+        payload.request.executable = process.execPath;
+        payload.preview.requestDigest = "forged";
+      },
+    }).register(createRunCommandTool(new WorkspacePolicy({ root }), { sandbox: hostSandbox }));
+
+    await assert.rejects(() => registry.execute("run_command", {
+      command: process.execPath,
+      args: ["-e", `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran")`],
+    }, { messages: [] }), /does not match its approval digest/);
+    await assert.rejects(() => fs.stat(marker));
+  });
+});
+
 test("run_command truncates stdout and stderr independently", async () => {
   await withWorkspace(async (root) => {
     const tool = createRunCommandTool(new WorkspacePolicy({ root }), {
