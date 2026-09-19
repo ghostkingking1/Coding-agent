@@ -30,6 +30,7 @@ export { OpenAICompatibleModel, OpenAICompatibleResponseError } from "./model/op
 export { OpenAIResponsesModel, OpenAIResponsesResponseError } from "./model/openai-responses.ts";
 export { ApprovedModelClient, DefaultModelApprovalPolicy, ModelApprovalDeniedError } from "./model/approval.ts";
 export { createConfiguredModelClient, readModelRuntimeConfig } from "./model/runtime-config.ts";
+export { ModelRouter } from "./model/model-router.ts";
 export { argsInputSchema, envInputSchema, pathInputSchema, singleLineTextSchema, stringWithoutNullByteSchema } from "./tools/tool-input-schemas.ts";
 export type {
   ApprovalRequest,
@@ -90,6 +91,7 @@ export type { OpenAICompatibleModelOptions } from "./model/openai-compatible.ts"
 export type { OpenAIResponsesModelOptions } from "./model/openai-responses.ts";
 export type { ModelApprovalPolicy, ModelApprovalRequest } from "./model/approval.ts";
 export type { ModelRuntimeConfig, ModelRuntimeOptions, OpenAICompatibleRuntimeConfig } from "./model/runtime-config.ts";
+export type { ModelRouteDecision, ModelRouterOptions } from "./model/model-router.ts";
 export type { PatchChange, PatchFileResult, PatchInput, PatchPreview, PatchResult } from "./tools/patch-tools.ts";
 export type { RunCommandInput, RunCommandPreview, RunCommandResult, RunCommandToolOptions } from "./tools/command-tools.ts";
 export type { ExecutionRequest, ExecutionNetworkPolicy, ExecutionNetworkPolicyInput, SandboxBackend, SandboxCapabilities, SandboxCapability, SandboxSpawnRequest } from "./tools/sandbox.ts";

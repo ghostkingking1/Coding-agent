@@ -3,6 +3,7 @@ import { DefaultModelApprovalPolicy, ApprovedModelClient, type ModelApprovalPoli
 import { OpenAICompatibleModel } from "./openai-compatible.ts";
 import { OpenAIResponsesModel } from "./openai-responses.ts";
 import type { HttpTransport } from "./transport.ts";
+import { ModelRouter, type ModelRouteDecision } from "./model-router.ts";
 
 const PROVIDER_ENV = "CODING_AGENT_MODEL_PROVIDER";
 const BASE_URL_ENV = "CODING_AGENT_MODEL_BASE_URL";
@@ -11,6 +12,8 @@ const API_KEY_ENV = "CODING_AGENT_MODEL_API_KEY";
 const TIMEOUT_ENV = "CODING_AGENT_MODEL_TIMEOUT_MS";
 const MAX_RESPONSE_BYTES_ENV = "CODING_AGENT_MODEL_MAX_RESPONSE_BYTES";
 const PROTOCOL_ENV = "CODING_AGENT_MODEL_PROTOCOL";
+const COMPLEX_MODEL_ENV = "CODING_AGENT_MODEL_COMPLEX";
+const ROUTE_THRESHOLD_ENV = "CODING_AGENT_MODEL_ROUTE_THRESHOLD";
 
 /** 当前支持的显式模型运行时配置。 */
 export interface OpenAICompatibleRuntimeConfig {
@@ -21,6 +24,7 @@ export interface OpenAICompatibleRuntimeConfig {
   readonly apiKey?: string;
   readonly timeoutMs?: number;
   readonly maxResponseBytes?: number;
+  readonly routing?: { readonly complexModel: string; readonly complexThreshold?: number };
 }
 
 export type ModelRuntimeConfig = OpenAICompatibleRuntimeConfig;
@@ -30,6 +34,7 @@ export interface ModelRuntimeOptions {
   readonly transport?: HttpTransport;
   readonly approval?: ModelApprovalPolicy;
   readonly onApprovalRequired?: (request: ModelApprovalRequest) => void | Promise<void>;
+  readonly onRouteDecision?: (decision: ModelRouteDecision) => void | Promise<void>;
 }
 
 /**
@@ -45,6 +50,8 @@ export function readModelRuntimeConfig(environment: Readonly<Record<string, stri
     environment[TIMEOUT_ENV],
     environment[MAX_RESPONSE_BYTES_ENV],
     environment[PROTOCOL_ENV],
+    environment[COMPLEX_MODEL_ENV],
+    environment[ROUTE_THRESHOLD_ENV],
   ];
   if (values.every((value) => value === undefined)) return undefined;
 
@@ -52,6 +59,9 @@ export function readModelRuntimeConfig(environment: Readonly<Record<string, stri
   if (provider !== "openai-compatible") {
     throw new Error(`${PROVIDER_ENV} must be openai-compatible`);
   }
+  const complexModel = optionalEnvironmentValue(environment, COMPLEX_MODEL_ENV);
+  const routeThreshold = optionalPositiveInteger(environment, ROUTE_THRESHOLD_ENV);
+  if (routeThreshold !== undefined && !complexModel) throw new Error(`${COMPLEX_MODEL_ENV} must be set when routing is configured`);
   return {
     provider,
     protocol: parseProtocol(optionalEnvironmentValue(environment, PROTOCOL_ENV)),
@@ -60,15 +70,23 @@ export function readModelRuntimeConfig(environment: Readonly<Record<string, stri
     apiKey: optionalEnvironmentValue(environment, API_KEY_ENV),
     timeoutMs: optionalPositiveInteger(environment, TIMEOUT_ENV),
     maxResponseBytes: optionalPositiveInteger(environment, MAX_RESPONSE_BYTES_ENV),
+    ...(complexModel ? { routing: { complexModel, complexThreshold: routeThreshold } } : {}),
   };
 }
 
 /** 由已验证配置创建受网络审批保护的模型客户端。 */
 export function createConfiguredModelClient(config: ModelRuntimeConfig, options: ModelRuntimeOptions = {}): ModelClient {
+  const simple = createApprovedClient(config, config.model, options);
+  if (!config.routing) return simple;
+  const complex = createApprovedClient(config, config.routing.complexModel, options);
+  return new ModelRouter({ simple, complex, complexThreshold: config.routing.complexThreshold, onDecision: options.onRouteDecision });
+}
+
+function createApprovedClient(config: ModelRuntimeConfig, model: string, options: ModelRuntimeOptions): ModelClient {
   const Client = config.protocol === "responses" ? OpenAIResponsesModel : OpenAICompatibleModel;
   const client = new Client({
     baseUrl: config.baseUrl,
-    model: config.model,
+    model,
     apiKey: config.apiKey,
     transport: options.transport,
     timeoutMs: config.timeoutMs,

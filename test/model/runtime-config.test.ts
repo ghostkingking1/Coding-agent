@@ -3,6 +3,7 @@ import test from "node:test";
 import { DefaultModelApprovalPolicy, ModelApprovalDeniedError } from "../../src/model/approval.ts";
 import { createConfiguredModelClient, readModelRuntimeConfig } from "../../src/model/runtime-config.ts";
 import type { HttpRequest, HttpResponse, HttpTransport } from "../../src/model/transport.ts";
+import type { ModelRouteDecision } from "../../src/model/model-router.ts";
 
 class FakeTransport implements HttpTransport {
   requests: HttpRequest[] = [];
@@ -84,4 +85,32 @@ test("creates an approved OpenAI-compatible runtime from explicit configuration"
   assert.equal(transport.requests[0]?.url.toString(), "https://models.example/v1/chat/completions");
   assert.equal(transport.requests[0]?.timeoutMs, 25);
   assert.equal(transport.requests[0]?.maxResponseBytes, 1000);
+});
+
+test("creates an observable two-model router when a complex model is configured", async () => {
+  const config = readModelRuntimeConfig({
+    CODING_AGENT_MODEL_PROVIDER: "openai-compatible",
+    CODING_AGENT_MODEL_BASE_URL: "https://models.example/v1",
+    CODING_AGENT_MODEL: "fast-model",
+    CODING_AGENT_MODEL_COMPLEX: "strong-model",
+    CODING_AGENT_MODEL_ROUTE_THRESHOLD: "2",
+  });
+  if (!config) throw new Error("Expected model configuration");
+  assert.equal(config.routing?.complexModel, "strong-model");
+  const decisions: ModelRouteDecision[] = [];
+  const transport = new FakeTransport();
+  const routed = createConfiguredModelClient(config, {
+    transport,
+    approval: new DefaultModelApprovalPolicy(() => true),
+    onRouteDecision: (decision) => { decisions.push(decision); },
+  });
+  await routed.generate({ messages: [{ role: "user", content: "security migration" }], tools: [] });
+  assert.equal(decisions[0]?.model, "strong-model");
+  assert.match(transport.requests[0]?.init?.body as string, /"model":"strong-model"/);
+  assert.throws(() => readModelRuntimeConfig({
+    CODING_AGENT_MODEL_PROVIDER: "openai-compatible",
+    CODING_AGENT_MODEL_BASE_URL: "https://models.example/v1",
+    CODING_AGENT_MODEL: "fast-model",
+    CODING_AGENT_MODEL_ROUTE_THRESHOLD: "2",
+  }), /COMPLEX/);
 });

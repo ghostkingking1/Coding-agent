@@ -240,6 +240,8 @@ export interface ModelRequest {
   readonly contextResult?: ContextResult;
   /** Responses 协议可选的服务端上下文引用。 */
   readonly previousResponseId?: string;
+  /** 本地 router 使用的审计通道，provider adapter 不得序列化这些字段。 */
+  readonly routingAudit?: { readonly sink: AuditSink; readonly sessionId?: string; readonly runId?: string };
 }
 
 /** 真实 provider 和测试替身共同实现的统一模型接口。 */
