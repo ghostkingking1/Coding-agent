@@ -341,7 +341,7 @@ export class Agent {
 
 
   async exportContextCheckpoint(sessionId: string, messages: readonly Message[], budget?: import("./types.ts").ContextBudget): Promise<import("./types.ts").ContextCheckpoint | undefined> {
-    return this.contextManager.exportCheckpoint?.(sessionId, messages, budget);
+    return this.contextManager.exportCheckpoint?.(sessionId, messages, budget ?? this.options.contextBudget);
   }
 
   restoreContextCheckpoint(checkpoint: import("./types.ts").ContextCheckpoint, messages: readonly Message[]): boolean {

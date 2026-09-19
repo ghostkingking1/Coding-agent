@@ -30,9 +30,9 @@ export class SessionManager {
       throw new Error("Session has an active run; refuse to load it concurrently");
     }
     await this.store.interruptExpiredRuns(sessionId, now, now);
-    const messages = await this.store.listMessages(sessionId);
     const contextCheckpoint = await this.store.getContextCheckpoint(sessionId);
-    return Session.restore(this.agent, { record, store: this.store, messages, runs, contextCheckpoint });
+    const { messages, persistedMessageCount } = await this.loadContextMessages(sessionId, contextCheckpoint);
+    return Session.restore(this.agent, { record, store: this.store, messages, persistedMessageCount, runs, contextCheckpoint });
   }
 
   /** 显式接管疑似崩溃的会话；调用方必须先确认原进程已停止。 */
@@ -45,11 +45,25 @@ export class SessionManager {
     const run = [...runs].reverse().find((candidate) => candidate.status === "interrupted");
     const checkpoint = run ? await this.store.getCheckpoint(sessionId, run.id) : undefined;
     if (!run || !checkpoint) return this.load(sessionId);
-    const messages = await this.store.listMessages(sessionId);
     const contextCheckpoint = await this.store.getContextCheckpoint(sessionId);
-    return Session.restore(this.agent, { record, store: this.store, messages, runs, contextCheckpoint, resumable: { run, checkpoint } });
+    const { messages, persistedMessageCount } = await this.loadContextMessages(sessionId, contextCheckpoint);
+    return Session.restore(this.agent, { record, store: this.store, messages, persistedMessageCount, runs, contextCheckpoint, resumable: { run, checkpoint } });
   }
 
   list(): Promise<readonly SessionRecord[]> { return this.store.listSessions(); }
+  private async loadContextMessages(sessionId: string, checkpoint: import("./types.ts").ContextCheckpoint | undefined): Promise<{ messages: import("./session-store.ts").StoredMessage[]; persistedMessageCount: number }> {
+    if (!this.store.countMessages || !this.store.listMessagesFrom) {
+      const messages = [...await this.store.listMessages(sessionId)];
+      return { messages, persistedMessageCount: messages.length };
+    }
+    const persistedMessageCount = await this.store.countMessages(sessionId);
+    if (!checkpoint?.resumeMessages || checkpoint.sourceMessageCount === undefined || checkpoint.sourceMessageCount > persistedMessageCount) {
+      return { messages: [...await this.store.listMessages(sessionId)], persistedMessageCount };
+    }
+    const tail = await this.store.listMessagesFrom(sessionId, checkpoint.sourceMessageCount);
+    const restored = checkpoint.resumeMessages.map((message, sequence) => ({ sessionId, sequence, message, createdAt: checkpoint.updatedAt }));
+    await this.store.record({ sessionId, eventType: "context_checkpoint_restored", status: "restored", metadata: { sourceMessageCount: checkpoint.sourceMessageCount, resumeMessageCount: restored.length, tailMessageCount: tail.length } });
+    return { messages: [...restored, ...tail], persistedMessageCount };
+  }
   private async requireSession(sessionId: string): Promise<SessionRecord> { const record = await this.store.getSession(sessionId); if (!record) throw new Error(`Session not found: ${sessionId}`); return record; }
 }

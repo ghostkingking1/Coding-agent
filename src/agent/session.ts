@@ -54,6 +54,8 @@ export class Session {
   private readonly store?: SessionStore;
   private readonly workspaceRoot?: string;
   private persisted = false;
+  /** 内存 context 可能已压缩，数据库 sequence 必须独立按完整 transcript 递增。 */
+  private persistedMessageCount = 0;
   private readonly ownerId = `pid-${process.pid}-${crypto.randomUUID()}`;
   private resumable?: { readonly run: StoredRunRecord; readonly checkpoint: CheckpointRecord };
 
@@ -75,11 +77,12 @@ export class Session {
   }
 
   /** 从已提交记录恢复；未完成 run 已由 SessionManager 标记为 interrupted。 */
-  static restore(agent: Agent, input: { readonly record: SessionRecord; readonly store: SessionStore; readonly messages: readonly StoredMessage[]; readonly runs: readonly StoredRunRecord[]; readonly contextCheckpoint?: import("./types.ts").ContextCheckpoint; readonly resumable?: { readonly run: StoredRunRecord; readonly checkpoint: CheckpointRecord } }): Session {
+  static restore(agent: Agent, input: { readonly record: SessionRecord; readonly store: SessionStore; readonly messages: readonly StoredMessage[]; readonly persistedMessageCount?: number; readonly runs: readonly StoredRunRecord[]; readonly contextCheckpoint?: import("./types.ts").ContextCheckpoint; readonly resumable?: { readonly run: StoredRunRecord; readonly checkpoint: CheckpointRecord } }): Session {
     const session = new Session(agent, { sessionId: input.record.id, store: input.store, workspaceRoot: input.record.workspaceRoot });
     session.context = input.messages.map((message) => message.message);
     session.statusValue = input.record.status;
     session.persisted = true;
+    session.persistedMessageCount = input.persistedMessageCount ?? input.messages.length;
     session.runHistory.push(...input.runs.flatMap((run) => toSessionRun(run)));
     if (input.contextCheckpoint) agent.restoreContextCheckpoint(input.contextCheckpoint, session.context);
     session.resumable = input.resumable;
@@ -129,9 +132,12 @@ export class Session {
       clearInterval(heartbeat);
       const runResult: RunResult = { ...result, status: "completed", sessionId: this.sessionId, runId: pending.run.id, startedAt: pending.run.startedAt, finishedAt };
       const newMessages = result.messages.slice(this.context.length);
-      await this.store!.completeRun({ run: { id: pending.run.id, sessionId: this.sessionId, status: "completed", input: pending.run.input, finalText: result.finalText, startedAt: pending.run.startedAt, finishedAt, result }, messages: newMessages.map((message, index) => ({ sessionId: this.sessionId, runId: pending.run.id, sequence: this.context.length + index, message, createdAt: finishedAt })) });
+      await this.store!.completeRun({ run: { id: pending.run.id, sessionId: this.sessionId, status: "completed", input: pending.run.input, finalText: result.finalText, startedAt: pending.run.startedAt, finishedAt, result }, messages: newMessages.map((message, index) => ({ sessionId: this.sessionId, runId: pending.run.id, sequence: this.persistedMessageCount + index, message, createdAt: finishedAt })) });
       await this.store!.record({ sessionId: this.sessionId, runId: pending.run.id, eventType: "run_completed" });
       this.context = [...result.messages];
+      this.persistedMessageCount += newMessages.length;
+      const resumedContextCheckpoint = await this.agent.exportContextCheckpoint(this.sessionId, this.context);
+      if (resumedContextCheckpoint) await this.store!.saveContextCheckpoint({ ...resumedContextCheckpoint, sourceMessageCount: this.persistedMessageCount });
       this.resumable = undefined;
       this.runHistory.push(runResult);
       return runResult;
@@ -176,12 +182,13 @@ export class Session {
       const newMessages = result.messages.slice(this.context.length);
       await this.store?.completeRun({
         run: { id: runId, sessionId: this.sessionId, status: "completed", input, finalText: result.finalText, startedAt, finishedAt, result },
-        messages: newMessages.map((message, index) => ({ sessionId: this.sessionId, runId, sequence: this.context.length + index, message, createdAt: finishedAt })),
+        messages: newMessages.map((message, index) => ({ sessionId: this.sessionId, runId, sequence: this.persistedMessageCount + index, message, createdAt: finishedAt })),
       });
       await this.store?.record({ sessionId: this.sessionId, runId, eventType: "run_completed" });
       this.context = [...result.messages];
+      this.persistedMessageCount += newMessages.length;
       const contextCheckpoint = await this.agent.exportContextCheckpoint(this.sessionId, this.context);
-      if (contextCheckpoint) await this.store?.saveContextCheckpoint(contextCheckpoint);
+      if (contextCheckpoint) await this.store?.saveContextCheckpoint({ ...contextCheckpoint, sourceMessageCount: this.persistedMessageCount });
       this.runHistory.push(runResult);
       return runResult;
     } catch (error) {

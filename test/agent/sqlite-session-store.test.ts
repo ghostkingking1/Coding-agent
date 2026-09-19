@@ -7,6 +7,8 @@ import { Agent } from "../../src/agent/agent.ts";
 import { SessionManager } from "../../src/agent/session-manager.ts";
 import { SqliteSessionStore } from "../../src/agent/sqlite-session-store.ts";
 import type { ModelClient, ModelResponse } from "../../src/agent/types.ts";
+import { DefaultContextManager } from "../../src/agent/context-manager.ts";
+import { DatabaseSync } from "node:sqlite";
 
 const capabilities = { toolCalling: false, streaming: false } as const;
 
@@ -169,6 +171,77 @@ test("SQLite SessionStore rejects duplicate sessions and workspace-mismatched re
     await manager.create("session-unique");
     await assert.rejects(() => manager.create("session-unique"));
     await assert.rejects(() => new SessionManager(new Agent(model(), undefined, { includeRunDiff: false }), store, path.join(root, "other")).load("session-unique"), /workspace/);
+    await store.close();
+  });
+});
+
+test("session recovery loads the persisted compacted view plus only the incremental tail", async () => {
+  await withDatabase(async (root, databasePath) => {
+    let summaryCalls = 0;
+    const firstStore = new SqliteSessionStore(databasePath);
+    const firstAgent = new Agent(model(), undefined, {
+      includeRunDiff: false,
+      contextBudget: { maxInputTokens: 150, recentTurns: 1 },
+      contextManager: new DefaultContextManager({ summarize: async () => { summaryCalls += 1; return "persisted old work"; } }),
+    });
+    const session = await new SessionManager(firstAgent, firstStore, root).create("session-compact-resume");
+    await session.run("first request ".repeat(12));
+    await session.run("second request ".repeat(12));
+    const persistedCount = await firstStore.countMessages("session-compact-resume");
+    const checkpoint = await firstStore.getContextCheckpoint("session-compact-resume");
+    assert.ok(checkpoint?.resumeMessages);
+    assert.equal(checkpoint.sourceMessageCount, persistedCount);
+    assert.ok(checkpoint.resumeMessages.length < persistedCount);
+    await firstStore.close();
+
+    let restoredSummaryCalls = 0;
+    const restoredSummaryInputs: string[][] = [];
+    const requests: string[][] = [];
+    const restoredStore = new SqliteSessionStore(databasePath);
+    const restoredAgent = new Agent(model(requests), undefined, {
+      includeRunDiff: false,
+      contextBudget: { maxInputTokens: 150, recentTurns: 1 },
+      contextManager: new DefaultContextManager({ summarize: async (messages) => {
+        restoredSummaryCalls += 1;
+        restoredSummaryInputs.push(messages.map((message) => message.content));
+        return "incremental persisted summary";
+      } }),
+    });
+    const restored = await new SessionManager(restoredAgent, restoredStore, root).load("session-compact-resume");
+    assert.ok(restored.messages.length < persistedCount);
+    assert.ok(restored.messages.some((message) => message.content.includes("persisted old work")));
+    await restored.run("third request");
+    assert.ok(restoredSummaryCalls <= 1);
+    assert.equal(restoredSummaryInputs.flat().some((content) => content.includes("first request first request")), false);
+    assert.equal(requests[0]?.some((message) => message.includes("first request first request")), false);
+    assert.equal(await restoredStore.countMessages("session-compact-resume"), persistedCount + 2);
+    assert.ok((await restoredStore.listAuditEvents("session-compact-resume")).some((event) => event.eventType === "context_checkpoint_restored"));
+    await restoredStore.close();
+  });
+});
+
+test("SQLite migrates a version 5 context checkpoint without losing its summary", async () => {
+  await withDatabase(async (_root, databasePath) => {
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec(`
+      CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY);
+      INSERT INTO schema_migrations(version) VALUES (5);
+      CREATE TABLE context_checkpoints (
+        session_id TEXT PRIMARY KEY,
+        covered_through_sequence INTEGER NOT NULL,
+        source_prefix_hash TEXT NOT NULL,
+        summary_segments_json TEXT NOT NULL,
+        retained_tail_start INTEGER NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO context_checkpoints VALUES ('legacy-session', 1, 'hash', '[{"summaryId":"sum","sourceMessageIndexes":[0,1],"content":"legacy"}]', 2, '2026-01-01T00:00:00.000Z');
+    `);
+    legacy.close();
+
+    const store = new SqliteSessionStore(databasePath);
+    const checkpoint = await store.getContextCheckpoint("legacy-session");
+    assert.equal(checkpoint?.summarySegments[0]?.content, "legacy");
+    assert.equal(checkpoint?.resumeMessages, undefined);
     await store.close();
   });
 });

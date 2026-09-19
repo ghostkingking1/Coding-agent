@@ -51,6 +51,8 @@ export interface SessionStore {
   completeRun(input: CompleteRunInput): Promise<void>;
   failRun(input: { readonly sessionId: string; readonly runId: string; readonly status: "failed" | "interrupted"; readonly error: string; readonly finishedAt: string }): Promise<void>;
   listMessages(sessionId: string): Promise<readonly StoredMessage[]>;
+  listMessagesFrom?(sessionId: string, sequence: number): Promise<readonly StoredMessage[]>;
+  countMessages?(sessionId: string): Promise<number>;
   listRuns(sessionId: string): Promise<readonly StoredRunRecord[]>;
   interruptRunningRuns(sessionId: string, finishedAt: string): Promise<void>;
   interruptExpiredRuns(sessionId: string, now: string, finishedAt: string): Promise<number>;

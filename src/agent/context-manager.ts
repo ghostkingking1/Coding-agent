@@ -135,16 +135,35 @@ export class DefaultContextManager implements ContextManager {
 
   async exportCheckpoint(sessionId: string, messages: readonly Message[], budget: ContextBudget = { maxInputTokens: 32_000, recentTurns: this.options.recentTurns ?? 10, maxToolOutputTokens: this.options.maxToolOutputTokens ?? 4_000 }): Promise<ContextCheckpoint | undefined> {
     const result = await this.compact(messages, budget);
-    if (result.summaries.length === 0) return undefined;
-    const coveredThroughSequence = Math.max(...result.summaries.flatMap((summary) => summary.sourceMessageIndexes));
     const previous = this.restoredSegments.get(sessionId) ?? [];
+    if (result.summaries.length === 0 && previous.length === 0) return undefined;
+    const coveredThroughSequence = result.summaries.length > 0
+      ? Math.max(...result.summaries.flatMap((summary) => summary.sourceMessageIndexes))
+      : Math.max(...previous.flatMap((summary) => summary.sourceMessageIndexes));
     const segments = [...previous, ...result.summaries].filter((segment, index, all) => all.findIndex((candidate) => candidate.summaryId === segment.summaryId || JSON.stringify(candidate.sourceMessageIndexes) === JSON.stringify(segment.sourceMessageIndexes)) === index);
-    const checkpoint: ContextCheckpoint = { sessionId, coveredThroughSequence, sourcePrefixHash: prefixHash(messages, coveredThroughSequence), summarySegments: segments, retainedTailStart: coveredThroughSequence + 1, updatedAt: new Date().toISOString() };
+    const checkpoint: ContextCheckpoint = {
+      sessionId,
+      coveredThroughSequence,
+      sourcePrefixHash: prefixHash(messages, Math.min(coveredThroughSequence, messages.length - 1)),
+      summarySegments: segments,
+      retainedTailStart: coveredThroughSequence + 1,
+      resumeMessages: result.messages,
+      sourceMessageCount: messages.length,
+      updatedAt: new Date().toISOString(),
+    };
     this.restoredSegments.set(sessionId, checkpoint.summarySegments);
     return checkpoint;
   }
 
   restoreCheckpoint(checkpoint: ContextCheckpoint, messages: readonly Message[]): boolean {
+    if (checkpoint.resumeMessages && checkpoint.sourceMessageCount !== undefined) {
+      for (const segment of checkpoint.summarySegments) {
+        const source = segment.sourceMessageIndexes.map((index) => messages[index]).filter((message): message is Message => message !== undefined);
+        if (source.length === segment.sourceMessageIndexes.length) this.summaryCache.set(summaryKey(source), segment.content);
+      }
+      this.restoredSegments.set(checkpoint.sessionId, checkpoint.summarySegments);
+      return true;
+    }
     if (checkpoint.coveredThroughSequence >= messages.length || prefixHash(messages, checkpoint.coveredThroughSequence) !== checkpoint.sourcePrefixHash) return false;
     for (const segment of checkpoint.summarySegments) {
       const source = segment.sourceMessageIndexes.map((index) => messages[index]).filter((message): message is Message => message !== undefined);
