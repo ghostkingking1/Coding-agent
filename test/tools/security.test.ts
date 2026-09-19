@@ -75,3 +75,33 @@ test("security policy requests approval before non-read tools execute", async ()
   assert.equal(executed, false);
   assert.deepEqual(requests, ["write_file"]);
 });
+
+test("tool registry denies side effects when no policy is configured", async () => {
+  let executed = false;
+  const registry = new ToolRegistry().register({
+    name: "unsafe_write",
+    description: "test write",
+    manifest: { capabilities: ["write"] },
+    execute: () => { executed = true; },
+  });
+  await assert.rejects(() => registry.execute("unsafe_write", {}, { messages: [] }), ApprovalDeniedError);
+  assert.equal(executed, false);
+});
+
+test("tool registry rejects an empty capability set", () => {
+  assert.throws(() => new ToolRegistry().register({
+    name: "empty",
+    description: "invalid",
+    manifest: { capabilities: [] },
+    execute: () => undefined,
+  }), WorkspaceSecurityError);
+});
+
+test("tool registry rejects undeclared tools when no policy is configured", async () => {
+  const registry = new ToolRegistry().register({
+    name: "undeclared",
+    description: "missing manifest",
+    execute: () => "no",
+  });
+  await assert.rejects(() => registry.execute("undeclared", {}, { messages: [] }), WorkspaceSecurityError);
+});

@@ -11,15 +11,16 @@ import type { ModelClient, ModelResponse } from "../src/agent/types.ts";
 import { ToolRegistry } from "../src/tools/tool-registry.ts";
 import { WorkspacePolicy } from "../src/tools/security.ts";
 
-test("CLI exposes run_tests but not run_command to the model", async () => {
+test("CLI does not expose process tools without a sandbox helper", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "coding-agent-cli-"));
   try {
     const registry = new ToolRegistry();
     registerCliTools(registry, new WorkspacePolicy({ root }));
 
-    assert.deepEqual(registry.list().map((tool) => tool.name), CLI_MODEL_TOOL_NAMES);
+    const expected = CLI_MODEL_TOOL_NAMES.filter((name) => name !== "run_tests");
+    assert.deepEqual(registry.list().map((tool) => tool.name), expected);
     assert.equal(registry.get("run_command"), undefined);
-    assert.deepEqual(registry.listModelDefinitions().map((tool) => tool.name), CLI_MODEL_TOOL_NAMES);
+    assert.deepEqual(registry.listModelDefinitions().map((tool) => tool.name), expected);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
@@ -29,7 +30,7 @@ test("CLI system prompt states the workspace, tools, and test verification rule"
   const prompt = createCodingSystemPrompt("D:/scratch");
 
   assert.match(prompt, /Workspace root: D:\/scratch/);
-  assert.match(prompt, /read_file, list_files, search_text, apply_patch, run_tests/);
+  assert.match(prompt, /read_file, list_files, apply_patch, run_tests, search_text/);
   assert.match(prompt, /must use run_tests to verify/);
   assert.match(prompt, /If tests fail, inspect the failure, repair the code, and run run_tests again/);
   assert.doesNotMatch(prompt, /run_command/);
@@ -85,6 +86,12 @@ test("interactive CLI supports TTY prompt and exits on exit", async () => {
     await runInteractiveSession({ session: new Session(new Agent(model, undefined, { includeRunDiff: false })), root, input, output });
     assert.match(outputChunks.join(""), /veil> /);
   } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test("CLI system prompt reports unavailable verification without a process tool", () => {
+  const prompt = createCodingSystemPrompt("D:/scratch", undefined, [], ["read_file", "apply_patch"]);
+  assert.doesNotMatch(prompt, /must use run_tests/);
+  assert.match(prompt, /could not be executed or verified/);
 });
 
 test("interactive CLI handles fixed slash commands without invoking the model", async () => {

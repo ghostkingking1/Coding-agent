@@ -27,6 +27,7 @@ export interface ToolDefinition<TSchema extends ToolInputSchema> {
 
 /** 声明一个带 Zod 输入类型的工具，避免每个工具重复拼 manifest 和 unknown 断言。 */
 export function defineTool<TSchema extends ToolInputSchema>(definition: ToolDefinition<TSchema>): Tool<z.output<TSchema>> {
+  validateCapabilities(definition.capabilities);
   return {
     name: definition.name,
     description: definition.description,
@@ -41,6 +42,14 @@ export function defineTool<TSchema extends ToolInputSchema>(definition: ToolDefi
     preview: definition.preview,
     execute: definition.execute,
   };
+}
+
+function validateCapabilities(capabilities: readonly ToolCapability[]): void {
+  if (capabilities.length === 0) throw new Error("Tool capabilities must not be empty");
+  const allowed = new Set<ToolCapability>(["read", "write", "execute", "network"]);
+  if (capabilities.some((capability) => !allowed.has(capability))) {
+    throw new Error("Tool capabilities contain an unknown capability");
+  }
 }
 
 /** 在工具审批和执行前校验模型传入的结构化输入，并返回解析后的强类型值。 */
