@@ -361,7 +361,7 @@ loadMcpConfig,
       `Status: ${result.status}`,
       `Messages: ${result.messages.length}`,
       `Runs: ${result.runs.length}`,
-      ...(latest?.status === "completed" ? [`Task: ${latest.taskState}`, `Verification passed: ${verification?.verificationPassed ?? false}`, `Verification attempts: ${verification?.verificationAttempts ?? 0}`, `Repair attempts: ${verification?.repairAttempts ?? 0}`] : []),
+      ...(latest?.status === "completed" ? [`Task: ${latest.taskState}`, `Verification: ${verification?.status ?? "not_required"}`, `Verification attempts: ${verification?.verificationAttempts ?? 0}`, `Repair attempts: ${verification?.repairAttempts ?? 0}`] : []),
       "",
     ].join("\n");
   }

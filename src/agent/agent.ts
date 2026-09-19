@@ -13,9 +13,11 @@ import type {
   ToolCall,
   ModelStreamEvent,
   AuditEvent,
+  VerificationEvidence,
 } from "./types.ts";
 import { ModelTransportError } from "../model/errors.ts";
 import { TaskStateMachine } from "./task-state-machine.ts";
+import crypto from "node:crypto";
 
 const DEFAULT_MAX_STEPS = 8;
 /** 未配置模型容量时采用保守上限；调用方可按 provider 的真实输入容量显式覆盖。 */
@@ -166,7 +168,7 @@ export class Agent {
       steps,
       stopReason,
       taskState: verification?.state ?? (stopReason === "completed" ? "completed" : "working"),
-      verification: verification?.summary() ?? { required: false, writeObserved: false, verificationPassed: false, verificationAttempts: 0, repairAttempts: 0 },
+      verification: verification?.summary() ?? { required: false, writeObserved: false, status: "not_required", verificationPassed: false, verificationAttempts: 0, repairAttempts: 0, evidence: [] },
       ...(diff ? { diff } : {}),
       ...(runOptions.gitChangeTracker ? { gitChanges: await runOptions.gitChangeTracker.finish(diff) } : {}),
     } as const;
@@ -226,16 +228,35 @@ export class Agent {
     for (const result of results) {
       if (!verification || !result.succeeded) {
         if (verification && !result.succeeded && this.tools.get(result.message.toolName)?.manifest?.verification) {
-          await verification.observeVerification(result.message.toolName, false);
+          await verification.observeVerification(result.message.toolName, failedVerificationEvidence(result.message.toolName));
         }
         continue;
       }
       const manifest = this.tools.get(result.message.toolName)?.manifest;
       if (manifest?.capabilities.includes("write")) await verification.observeWrite(result.message.toolName);
       if (manifest?.verification) {
-        let passed = false;
-        try { passed = manifest.verification.isSuccessful(result.rawResult); } catch { passed = false; }
-        await verification.observeVerification(result.message.toolName, passed);
+        let evidence: VerificationEvidence;
+        try {
+          evidence = manifest.verification.toEvidence?.(result.rawResult, result.message.toolName)
+            ?? legacyVerificationEvidence(result.message.toolName, manifest.verification.isSuccessful(result.rawResult));
+        } catch {
+          evidence = failedVerificationEvidence(result.message.toolName, "verification result could not be evaluated");
+        }
+        await verification.observeVerification(result.message.toolName, evidence);
+        await this.audit({
+          sessionId: runOptions.sessionId,
+          runId: runOptions.runId,
+          eventType: "verification_evidence_recorded",
+          step,
+          toolName: result.message.toolName,
+          status: evidence.status,
+          metadata: {
+            evidenceId: evidence.evidenceId,
+            reason: evidence.reason,
+            ...(evidence.commandDigest ? { commandDigest: evidence.commandDigest } : {}),
+            ...(evidence.policyDigest ? { policyDigest: evidence.policyDigest } : {}),
+          },
+        }, runOptions.auditSink ?? this.options.auditSink);
       }
     }
     await checkpoint(runOptions, step, "tool", messages, results.map(({ key, message }) => ({ key, toolCallId: message.toolCallId, toolName: message.toolName, status: isToolErrorMessage(message) ? "failed" : "completed", result: message.content })));
@@ -338,6 +359,21 @@ export class Agent {
   private async emit(event: Parameters<NonNullable<AgentOptions["onEvent"]>>[0]): Promise<void> {
     await this.options.onEvent?.(event);
   }
+}
+
+function legacyVerificationEvidence(toolName: string, passed: boolean): VerificationEvidence {
+  return {
+    evidenceId: crypto.randomUUID(),
+    toolName,
+    kind: "test",
+    status: passed ? "passed" : "failed",
+    reason: passed ? "legacy verifier accepted the result" : "legacy verifier rejected the result",
+    recordedAt: new Date().toISOString(),
+  };
+}
+
+function failedVerificationEvidence(toolName: string, reason = "verification tool execution failed"): VerificationEvidence {
+  return { evidenceId: crypto.randomUUID(), toolName, kind: "test", status: "failed", reason, recordedAt: new Date().toISOString() };
 }
 
 async function checkpoint(runOptions: AgentRunOptions, step: number, phase: "model" | "tool", messages: readonly Message[], toolResults: readonly { key: string; toolCallId: string; toolName: string; status: "completed" | "failed"; result: string }[]): Promise<void> {

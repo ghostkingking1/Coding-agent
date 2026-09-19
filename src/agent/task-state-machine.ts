@@ -1,4 +1,4 @@
-import type { TaskState, VerificationPolicy, VerificationSummary } from "./types.ts";
+import type { TaskState, VerificationEvidence, VerificationPolicy, VerificationStatus, VerificationSummary } from "./types.ts";
 
 const DEFAULT_MAX_REPAIR_ATTEMPTS = 3;
 
@@ -11,6 +11,8 @@ export class TaskStateMachine {
   private verifierToolValue?: string;
   private verificationAttemptsValue = 0;
   private repairAttemptsValue = 0;
+  private statusValue: VerificationStatus = "not_required";
+  private readonly evidenceValue: VerificationEvidence[] = [];
   private readonly onTransition?: (from: TaskState, to: TaskState, reason: string) => void | Promise<void>;
 
   constructor(policy: VerificationPolicy, onTransition?: (from: TaskState, to: TaskState, reason: string) => void | Promise<void>) {
@@ -34,17 +36,20 @@ export class TaskStateMachine {
     this.ensureMutable("observe a write");
     this.writeObservedValue = true;
     this.verificationPassedValue = false;
+    this.statusValue = "pending";
     this.verifierToolValue = undefined;
     await this.transition("verifying", `write tool completed: ${toolName}`);
   }
 
-  async observeVerification(toolName: string, successful: boolean): Promise<void> {
+  async observeVerification(toolName: string, evidence: VerificationEvidence): Promise<void> {
     this.ensureMutable("observe verification");
     // 没有成功写入时，验证工具只是普通工具调用，不应把只读任务强行推进到验证态。
     if (!this.writeObservedValue) return;
     this.verificationAttemptsValue += 1;
     this.verifierToolValue = toolName;
-    if (successful) {
+    this.evidenceValue.push(evidence);
+    this.statusValue = evidence.status;
+    if (evidence.status === "passed") {
       this.verificationPassedValue = true;
       await this.transition("verifying", `verification passed: ${toolName}`);
       return;
@@ -84,10 +89,12 @@ export class TaskStateMachine {
     return {
       required: this.writeObservedValue,
       writeObserved: this.writeObservedValue,
+      status: this.statusValue,
       ...(this.verifierToolValue ? { verifierTool: this.verifierToolValue } : {}),
       verificationPassed: this.verificationPassedValue,
       verificationAttempts: this.verificationAttemptsValue,
       repairAttempts: this.repairAttemptsValue,
+      evidence: [...this.evidenceValue],
     };
   }
 
