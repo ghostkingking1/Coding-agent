@@ -1,4 +1,5 @@
 import type { ModelToolDefinition, Tool, ToolContext, ToolExecutionPolicy } from "../agent/types.ts";
+import { ApprovalDeniedError, WorkspaceSecurityError } from "./security.ts";
 import { validateToolInput } from "./tool-schema.ts";
 
 /** 注册工具并在执行前统一应用授权策略。 */
@@ -8,7 +9,14 @@ export class ToolRegistry {
 
   /** 创建一个可选授权策略的工具注册表。 */
   constructor(policy?: ToolExecutionPolicy) {
-    this.policy = policy;
+    // 未注入审批策略时，副作用工具必须默认拒绝；只读工具仍可用于无状态调用方。
+    this.policy = policy ?? { authorize: async (tool) => {
+      const capabilities = tool.manifest?.capabilities;
+      if (!capabilities) throw new WorkspaceSecurityError(`Tool has no manifest: ${tool.name}`);
+      if (capabilities.length === 0 || !capabilities.every((capability) => capability === "read")) {
+        throw new ApprovalDeniedError(tool.name);
+      }
+    } };
   }
 
   /** 注册工具；名称为空或重复时拒绝注册。 */
@@ -18,6 +26,9 @@ export class ToolRegistry {
     }
     if (this.tools.has(tool.name)) {
       throw new Error(`Tool already registered: ${tool.name}`);
+    }
+    if (tool.manifest && (tool.manifest.capabilities.length === 0 || tool.manifest.capabilities.some((capability) => !["read", "write", "execute", "network"].includes(capability)))) {
+      throw new WorkspaceSecurityError(`Tool has invalid capabilities: ${tool.name}`);
     }
     this.tools.set(tool.name, tool);
     return this;

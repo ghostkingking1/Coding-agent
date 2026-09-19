@@ -6,7 +6,7 @@ import { createRunCommandModelInputSchema } from "./model-tool-schemas.ts";
 import { WorkspacePolicy } from "./security.ts";
 import { argsInputSchema, envInputSchema, singleLineTextSchema } from "./tool-input-schemas.ts";
 import { defineTool } from "./tool-schema.ts";
-import { executionRequestDigest, ProcessSandboxBackend, canonicalNetworkPolicy, type ExecutionRequest, type SandboxBackend, type ExecutionNetworkPolicy } from "./sandbox.ts";
+import { executionRequestDigest, ProcessSandboxBackend, SandboxUnavailableError, UnavailableSandboxBackend, canonicalNetworkPolicy, type ExecutionRequest, type SandboxBackend, type ExecutionNetworkPolicy } from "./sandbox.ts";
 import { decideSandboxPolicy, type PolicyDecision, type RiskClass, type SandboxPolicy } from "./sandbox-policy.ts";
 import crypto from "node:crypto";
 import type { Tool, ToolContext } from "../agent/types.ts";
@@ -170,7 +170,7 @@ function normalizeOptions(options: RunCommandToolOptions): NormalizedRunCommandO
     maxStdoutBytes,
     maxStderrBytes,
     allowedEnv: options.allowedEnv ?? DEFAULT_ALLOWED_ENV,
-    sandbox: options.sandbox ?? new ProcessSandboxBackend(),
+    sandbox: options.sandbox ?? new UnavailableSandboxBackend(),
     requireOsIsolation: options.requireOsIsolation ?? false,
     cpuTimeMs,
     memoryBytes,
@@ -206,10 +206,13 @@ function planCommand(policy: WorkspacePolicy, options: NormalizedRunCommandOptio
     filesystemWriteHint: true,
   };
   const policyDecision = decideSandboxPolicy(request, options.sandbox.capabilities.capabilities);
-  const required: import("./sandbox.ts").SandboxCapability[] = [...policyDecision.requiredCapabilities];
+  const required: import("./sandbox.ts").SandboxCapability[] = options.sandbox.capabilities.backend === "process" && !options.requireOsIsolation
+    ? ["process.spawn", ...(options.maxProcesses > 1 ? ["process-tree" as const] : [])]
+    : [...policyDecision.requiredCapabilities];
   if (options.requireOsIsolation) required.push("os.isolation");
-  if (!policyDecision.allowed) {
-    throw new Error(policyDecision.reason ?? "Sandbox policy rejected execution");
+  const hostBackend = options.sandbox.capabilities.backend === "process" && !options.requireOsIsolation;
+  if (!policyDecision.allowed && !hostBackend) {
+    throw new SandboxUnavailableError(policyDecision.reason ?? "Sandbox policy rejected execution");
   }
   options.sandbox.assertAvailable(required);
   return {

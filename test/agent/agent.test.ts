@@ -56,7 +56,7 @@ test("executes tool calls and feeds their results back to the model", async () =
       return value.a + value.b;
     },
   };
-  const registry = new ToolRegistry().register(add);
+  const registry = new ToolRegistry({ authorize: async () => undefined }).register(add);
 
   const result = await new Agent(model, registry).run("calculate");
   assert.equal(result.finalText, "5");
@@ -113,7 +113,7 @@ test("stops after maxSteps", async () => {
       };
     },
   };
-  const registry = new ToolRegistry().register({
+  const registry = new ToolRegistry({ authorize: async () => undefined }).register({
     name: "noop",
     description: "Does nothing",
     execute: () => "ok",
@@ -136,7 +136,7 @@ test("passes declared model tools and the cancellation signal to the model", asy
       return { message: { role: "assistant", content: "done" } };
     },
   };
-  const registry = new ToolRegistry()
+  const registry = new ToolRegistry({ authorize: async () => undefined })
     .register({
       name: "visible",
       description: "Visible tool",
@@ -228,7 +228,7 @@ test("exposes a paged artifact reader after a tool returns oversized output", as
       return { message: { role: "assistant", content: "done" } };
     },
   };
-  const registry = new ToolRegistry().register({ name: "large", description: "large", execute: () => "x".repeat(5_000) });
+  const registry = new ToolRegistry({ authorize: async () => undefined }).register({ name: "large", description: "large", execute: () => "x".repeat(5_000) });
   const result = await new Agent(model, registry, { includeRunDiff: false }).run("inspect", { sessionId: "artifact-session", runId: "artifact-run" });
   assert.equal(result.finalText, "done");
 });
@@ -241,9 +241,9 @@ test("reuses checkpointed tool results instead of executing the tool twice", asy
     if (request.messages.some((message) => message.role === "tool")) return { message: { role: "assistant", content: "done" } };
     return { message: { role: "assistant", content: "", toolCalls: [{ id: "call-1", name: "read", input: {} }] } };
   } };
-  const first = await new Agent(model, new ToolRegistry().register(tool), { includeRunDiff: false }).run("inspect", { sessionId: "s", runId: "r", checkpoint: { save: async (checkpoint) => { checkpoints.push(checkpoint); } } });
+  const first = await new Agent(model, new ToolRegistry({ authorize: async () => undefined }).register(tool), { includeRunDiff: false }).run("inspect", { sessionId: "s", runId: "r", checkpoint: { save: async (checkpoint) => { checkpoints.push(checkpoint); } } });
   assert.equal(first.finalText, "done");
-  const second = await new Agent(model, new ToolRegistry().register(tool), { includeRunDiff: false }).run("inspect", { sessionId: "s", runId: "r", replayToolResults: new Map([["r:1:call-1", "cached result"]]) });
+  const second = await new Agent(model, new ToolRegistry({ authorize: async () => undefined }).register(tool), { includeRunDiff: false }).run("inspect", { sessionId: "s", runId: "r", replayToolResults: new Map([["r:1:call-1", "cached result"]]) });
   assert.equal(second.finalText, "done");
   assert.equal(executions, 1);
   assert.ok(checkpoints.some((checkpoint) => checkpoint.phase === "tool"));
@@ -263,7 +263,7 @@ test("executes parallelizable tool calls concurrently and returns declared order
     },
   };
   const read = { name: "read", description: "read", manifest: { capabilities: ["read"] as const, parallelizable: true }, async execute(input: unknown) { active += 1; peak = Math.max(peak, active); await new Promise((resolve) => setTimeout(resolve, 30)); active -= 1; return (input as { value: string }).value; } };
-  const result = await new Agent(model, new ToolRegistry().register(read), { includeRunDiff: false }).run("inspect");
+  const result = await new Agent(model, new ToolRegistry({ authorize: async () => undefined }).register(read), { includeRunDiff: false }).run("inspect");
   assert.equal(result.finalText, "done");
   assert.equal(peak, 2);
 });
@@ -279,7 +279,7 @@ test("keeps undeclared tools serial and isolates a failed call", async () => {
     assert.equal(request.messages.find((message) => message.role === "tool" && message.toolCallId === "ok")?.content, "ok");
     return { message: { role: "assistant", content: "done" } };
   } };
-  const registry = new ToolRegistry().register({ name: "bad", description: "bad", execute: () => { throw new Error("boom"); } }).register({ name: "ok", description: "ok", execute: async () => { active += 1; peak = Math.max(peak, active); await new Promise((resolve) => setTimeout(resolve, 10)); active -= 1; return "ok"; } });
+  const registry = new ToolRegistry({ authorize: async () => undefined }).register({ name: "bad", description: "bad", execute: () => { throw new Error("boom"); } }).register({ name: "ok", description: "ok", execute: async () => { active += 1; peak = Math.max(peak, active); await new Promise((resolve) => setTimeout(resolve, 10)); active -= 1; return "ok"; } });
   await new Agent(model, registry, { includeRunDiff: false }).run("inspect");
   assert.equal(peak, 1);
 });
@@ -296,7 +296,7 @@ test("enforces the concurrency limit and conflict keys", async () => {
     return { message: { role: "assistant", content: "done" } };
   } };
   const read = { name: "read", description: "read", manifest: { capabilities: ["read"] as const, parallelizable: true, conflictKey: (input: unknown) => (input as { key: string }).key }, async execute() { active += 1; peak = Math.max(peak, active); await new Promise((resolve) => setTimeout(resolve, 15)); active -= 1; return "ok"; } };
-  await new Agent(model, new ToolRegistry().register(read), { includeRunDiff: false, maxConcurrentToolCalls: 2 }).run("inspect");
+  await new Agent(model, new ToolRegistry({ authorize: async () => undefined }).register(read), { includeRunDiff: false, maxConcurrentToolCalls: 2 }).run("inspect");
   assert.equal(peak, 2);
 });
 
@@ -316,7 +316,7 @@ test("emits batch lifecycle events and checkpoints after the complete batch", as
 });
 
 function createCodingTools(testResult: { readonly status: string; readonly passed: boolean }) {
-  return new ToolRegistry()
+  return new ToolRegistry({ authorize: async () => undefined })
     .register({
       name: "apply_patch",
       description: "modify",

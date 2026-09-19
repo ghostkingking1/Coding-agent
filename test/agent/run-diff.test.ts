@@ -9,6 +9,7 @@ import type { ModelClient, ModelResponse } from "../../src/agent/types.ts";
 import { SecurityPolicy, WorkspacePolicy } from "../../src/tools/security.ts";
 import { ToolRegistry } from "../../src/tools/tool-registry.ts";
 import { createWorkspaceTools } from "../../src/tools/workspace-tools.ts";
+import { ProcessSandboxBackend } from "../../src/tools/sandbox.ts";
 
 async function withWorkspace(run: (root: string) => Promise<void>): Promise<void> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "coding-agent-diff-"));
@@ -249,7 +250,7 @@ test("Agent result includes files created indirectly by run_command", async () =
   await withWorkspace(async (root) => {
     const registry = new ToolRegistry(new SecurityPolicy({ approval: { requestApproval: () => true } }));
     const policy = new WorkspacePolicy({ root });
-    const command = createWorkspaceTools(policy).find((tool) => tool.name === "run_command");
+    const command = createWorkspaceTools(policy, { sandbox: new ProcessSandboxBackend() }).find((tool) => tool.name === "run_command");
     if (!command) throw new Error("run_command was not registered");
     registry.register(command);
     let calls = 0;

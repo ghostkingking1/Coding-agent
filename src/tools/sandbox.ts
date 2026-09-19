@@ -86,14 +86,14 @@ export class SandboxUnavailableError extends Error {
 }
 
 /**
- * 仅用于兼容已有本地测试和显式开发配置的进程后端。
- * 它不宣称具备 OS isolation；生产调用方必须注入 Rust Helper 后端。
+ * 仅提供进程树管理，不宣称网络、文件系统或资源隔离能力。
+ * 生产调用方必须注入具备真实隔离能力的后端。
  */
 export class ProcessSandboxBackend implements SandboxBackend {
   readonly capabilities: SandboxCapabilities = {
     backend: "process",
     version: "0",
-    capabilities: ["process.spawn", "process-tree", "workspace.fs", "filesystem.workspace_write", "network.off", "resource.limits"],
+    capabilities: ["process.spawn", "process-tree"],
   };
 
   assertAvailable(required: readonly SandboxCapability[]): void {
@@ -102,7 +102,8 @@ export class ProcessSandboxBackend implements SandboxBackend {
   }
 
   spawn(request: SandboxSpawnRequest): ChildProcess {
-    this.assertAvailable(["process.spawn", networkCapability(request.network)]);
+    // Host backend 只负责启动和回收进程；网络/文件系统策略必须由更强后端实现。
+    this.assertAvailable(["process.spawn"]);
     return spawn(request.executable, request.args, {
       cwd: request.cwd,
       env: request.env,

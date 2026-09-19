@@ -8,6 +8,9 @@ import { ApprovalDeniedError, SecurityPolicy, WorkspacePolicy, WorkspaceSecurity
 import { ToolRegistry } from "../../src/tools/tool-registry.ts";
 import type { Tool, ToolContext } from "../../src/agent/types.ts";
 import { ToolOutputStore } from "../../src/agent/tool-output-store.ts";
+import { ProcessSandboxBackend } from "../../src/tools/sandbox.ts";
+
+const hostSandbox = new ProcessSandboxBackend();
 
 async function withWorkspace(run: (root: string) => Promise<void>): Promise<void> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "coding-agent-"));
@@ -19,13 +22,13 @@ async function withWorkspace(run: (root: string) => Promise<void>): Promise<void
 }
 
 async function executeTool(tool: Tool, input: unknown, context: ToolContext = { messages: [] }): Promise<unknown> {
-  return new ToolRegistry().register(tool).execute(tool.name, input, context);
+  return new ToolRegistry({ authorize: async () => undefined }).register(tool).execute(tool.name, input, context);
 }
 
 test("run_command executes an approved command inside the workspace cwd", async () => {
   await withWorkspace(async (root) => {
     await fs.mkdir(path.join(root, "src"));
-    const tool = createRunCommandTool(new WorkspacePolicy({ root }));
+    const tool = createRunCommandTool(new WorkspacePolicy({ root }), { sandbox: hostSandbox });
 
     const result = await executeTool(tool, {
       command: process.execPath,
@@ -43,7 +46,7 @@ test("run_command executes an approved command inside the workspace cwd", async 
 
 test("run_command rejects cwd escape attempts", async () => {
   await withWorkspace(async (root) => {
-    const tool = createRunCommandTool(new WorkspacePolicy({ root }));
+    const tool = createRunCommandTool(new WorkspacePolicy({ root }), { sandbox: hostSandbox });
 
     await assert.rejects(
       () => executeTool(tool, {
@@ -68,7 +71,7 @@ test("run_command requests approval before spawning", async () => {
         },
       },
     }));
-    registry.register(createRunCommandTool(new WorkspacePolicy({ root })));
+    registry.register(createRunCommandTool(new WorkspacePolicy({ root }), { sandbox: hostSandbox }));
 
     await assert.rejects(
       () => registry.execute("run_command", {
@@ -87,6 +90,7 @@ test("run_command requests approval before spawning", async () => {
 test("run_command truncates stdout and stderr independently", async () => {
   await withWorkspace(async (root) => {
     const tool = createRunCommandTool(new WorkspacePolicy({ root }), {
+      sandbox: hostSandbox,
       maxStdoutBytes: 5,
       maxStderrBytes: 7,
     });
@@ -108,7 +112,7 @@ test("run_command streams bytes beyond the model preview limit into artifacts", 
     const artifactRoot = await fs.mkdtemp(path.join(os.tmpdir(), "coding-agent-command-output-"));
     const store = new ToolOutputStore({ rootDirectory: artifactRoot });
     try {
-      const tool = createRunCommandTool(new WorkspacePolicy({ root }), { maxStdoutBytes: 5, maxStderrBytes: 5 });
+      const tool = createRunCommandTool(new WorkspacePolicy({ root }), { sandbox: hostSandbox, maxStdoutBytes: 5, maxStderrBytes: 5 });
       const result = await executeTool(tool, {
         command: process.execPath,
         args: ["-e", "process.stdout.write('abcdefghij'); process.stderr.write('klmnopqrst')"],
@@ -124,6 +128,7 @@ test("run_command streams bytes beyond the model preview limit into artifacts", 
 test("run_command only exposes allowlisted environment variables", async () => {
   await withWorkspace(async (root) => {
     const tool = createRunCommandTool(new WorkspacePolicy({ root }), {
+      sandbox: hostSandbox,
       allowedEnv: ["FOO"],
     });
 
@@ -146,7 +151,7 @@ test("run_command invokes Windows cmd shims without corrupting paths", { skip: p
   await withWorkspace(async (root) => {
     const shim = path.join(root, "echo-arg.cmd");
     await fs.writeFile(shim, "@echo off\r\necho %~1\r\n", "utf8");
-    const tool = createRunCommandTool(new WorkspacePolicy({ root }));
+    const tool = createRunCommandTool(new WorkspacePolicy({ root }), { sandbox: hostSandbox });
 
     const result = await executeTool(tool, {
       command: ".\\echo-arg.cmd",
@@ -168,6 +173,7 @@ test("run_command times out and terminates descendant processes", async () => {
       "setTimeout(() => {}, 5000)",
     ].join(";");
     const tool = createRunCommandTool(new WorkspacePolicy({ root }), {
+      sandbox: hostSandbox,
       defaultTimeoutMs: 100,
       maxTimeoutMs: 1000,
     });
@@ -187,7 +193,7 @@ test("run_command times out and terminates descendant processes", async () => {
 test("run_command aborts and terminates the running process tree", async () => {
   await withWorkspace(async (root) => {
     const controller = new AbortController();
-    const tool = createRunCommandTool(new WorkspacePolicy({ root }));
+    const tool = createRunCommandTool(new WorkspacePolicy({ root }), { sandbox: hostSandbox });
     const execution = executeTool(tool, {
       command: process.execPath,
       args: ["-e", "setTimeout(() => {}, 5000)"],

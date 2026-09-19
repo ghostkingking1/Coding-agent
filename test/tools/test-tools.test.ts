@@ -7,6 +7,9 @@ import { ApprovalDeniedError, SecurityPolicy, WorkspacePolicy, WorkspaceSecurity
 import { createRunTestsTool, type RunTestsPreview, type RunTestsResult } from "../../src/tools/test-tools.ts";
 import { ToolRegistry } from "../../src/tools/tool-registry.ts";
 import type { Tool, ToolContext } from "../../src/agent/types.ts";
+import { ProcessSandboxBackend } from "../../src/tools/sandbox.ts";
+
+const hostSandbox = new ProcessSandboxBackend();
 
 async function withWorkspace(run: (root: string) => Promise<void>): Promise<void> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "coding-agent-"));
@@ -22,14 +25,14 @@ async function writePackage(root: string, scripts: Record<string, string>): Prom
 }
 
 async function executeTool(tool: Tool, input: unknown, context: ToolContext = { messages: [] }): Promise<unknown> {
-  return new ToolRegistry().register(tool).execute(tool.name, input, context);
+  return new ToolRegistry({ authorize: async () => undefined }).register(tool).execute(tool.name, input, context);
 }
 
 test("run_tests executes the default npm test script", async () => {
   await withWorkspace(async (root) => {
     await writePackage(root, { test: "node ./pass.js" });
     await fs.writeFile(path.join(root, "pass.js"), "console.log('tests passed')\n", "utf8");
-    const tool = createRunTestsTool(new WorkspacePolicy({ root }));
+    const tool = createRunTestsTool(new WorkspacePolicy({ root }), { sandbox: hostSandbox });
 
     const result = await executeTool(tool, {}, { messages: [] }) as RunTestsResult;
 
@@ -51,7 +54,7 @@ test("run_tests returns structured failure output", async () => {
       "process.stdout.write('bad out'); process.stderr.write('bad err'); process.exit(7)\n",
       "utf8",
     );
-    const tool = createRunTestsTool(new WorkspacePolicy({ root }));
+    const tool = createRunTestsTool(new WorkspacePolicy({ root }), { sandbox: hostSandbox });
 
     const result = await executeTool(tool, {}, { messages: [] }) as RunTestsResult;
 
@@ -65,7 +68,7 @@ test("run_tests returns structured failure output", async () => {
 
 test("run_tests rejects cwd escape attempts", async () => {
   await withWorkspace(async (root) => {
-    const tool = createRunTestsTool(new WorkspacePolicy({ root }));
+    const tool = createRunTestsTool(new WorkspacePolicy({ root }), { sandbox: hostSandbox });
 
     await assert.rejects(
       () => executeTool(tool, { cwd: ".." }, { messages: [] }),
@@ -89,7 +92,7 @@ test("run_tests requests approval before starting npm", async () => {
         },
       },
     }));
-    registry.register(createRunTestsTool(new WorkspacePolicy({ root })));
+    registry.register(createRunTestsTool(new WorkspacePolicy({ root }), { sandbox: hostSandbox }));
 
     await assert.rejects(
       () => registry.execute("run_tests", {}, { messages: [] }),
@@ -109,6 +112,7 @@ test("run_tests maps timeouts to timed_out status", async () => {
     await writePackage(root, { test: "node ./sleep.js" });
     await fs.writeFile(path.join(root, "sleep.js"), "setTimeout(() => {}, 5000)\n", "utf8");
     const tool = createRunTestsTool(new WorkspacePolicy({ root }), {
+      sandbox: hostSandbox,
       defaultTimeoutMs: 50,
       maxTimeoutMs: 1000,
     });
@@ -126,6 +130,7 @@ test("run_tests only exposes allowlisted environment variables", async () => {
     await writePackage(root, { test: "node ./env.js" });
     await fs.writeFile(path.join(root, "env.js"), "console.log(`${process.env.FOO}:${process.env.BAR}`)\n", "utf8");
     const tool = createRunTestsTool(new WorkspacePolicy({ root }), {
+      sandbox: hostSandbox,
       allowedEnv: ["PATH", "Path", "PATHEXT", "SystemRoot", "ComSpec", "FOO"],
     });
 

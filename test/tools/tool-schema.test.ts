@@ -39,6 +39,16 @@ test("tool schema accepts valid object input", () => {
   }));
 });
 
+test("tool definitions reject an empty capability set", () => {
+  assert.throws(() => defineTool({
+    name: "empty",
+    description: "invalid",
+    capabilities: [],
+    inputSchema: z.object({}).strict(),
+    execute: () => "no",
+  }), /must not be empty/);
+});
+
 test("tool schema rejects malformed input with field paths", () => {
   assert.throws(() => validateToolInput(sampleSchema, "nope"), {
     name: "ToolInputValidationError",

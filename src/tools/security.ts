@@ -187,7 +187,7 @@ export class SecurityPolicy implements ToolExecutionPolicy {
       if (this.requireManifest) throw new WorkspaceSecurityError(`Tool has no manifest: ${tool.name}`);
       return;
     }
-    if (manifest.capabilities.every((capability) => capability === "read")) return;
+    if (manifest.capabilities.length > 0 && manifest.capabilities.every((capability) => capability === "read")) return;
     /** 在请求审批前生成预览，让审批方看到即将发生的精确变更。 */
     const preview = tool.preview ? await tool.preview(input, _context) : undefined;
     const request: ApprovalRequest = {

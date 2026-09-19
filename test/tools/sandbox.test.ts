@@ -30,6 +30,7 @@ test("unavailable sandbox fails closed before spawning", () => {
 
 test("process backend does not claim OS isolation", () => {
   const backend = new ProcessSandboxBackend();
+  assert.deepEqual(backend.capabilities.capabilities, ["process.spawn", "process-tree"]);
   assert.equal(backend.capabilities.capabilities.includes("os.isolation"), false);
   assert.throws(() => backend.assertAvailable(["os.isolation"]), SandboxUnavailableError);
 });
