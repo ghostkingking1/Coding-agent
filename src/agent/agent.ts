@@ -129,6 +129,7 @@ export class Agent {
           tools: this.tools.listModelDefinitions(),
           signal: this.options.signal,
           contextResult: context,
+          ...((runOptions.auditSink ?? this.options.auditSink) ? { routingAudit: { sink: (runOptions.auditSink ?? this.options.auditSink)!, sessionId: runOptions.sessionId, runId: runOptions.runId } } : {}),
         } as const;
         response = await this.generateWithRetry(request, step, { ...runOptions, auditSink: runOptions.auditSink ?? this.options.auditSink });
         if (response.usage) this.contextManager.observeUsage?.(context, response.usage);
