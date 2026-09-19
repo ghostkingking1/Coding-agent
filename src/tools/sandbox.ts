@@ -62,13 +62,14 @@ export interface ExecutionRequest {
   readonly cpuTimeMs: number;
   readonly memoryBytes: number;
   readonly maxProcesses: number;
+  /** Windows 命令行是否由调用方完成引用；该执行语义必须纳入审批摘要。 */
+  readonly windowsVerbatimArguments?: boolean;
   /** 由工具策略推导，模型不能直接提升该标记。 */
   readonly filesystemWriteHint?: boolean;
 }
 
 export interface SandboxSpawnRequest extends ExecutionRequest {
   readonly stdio?: SpawnOptions["stdio"];
-  readonly windowsVerbatimArguments?: boolean;
 }
 
 export interface SandboxBackend {

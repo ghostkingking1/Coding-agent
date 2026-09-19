@@ -59,6 +59,16 @@ export interface ApprovalRequest {
   readonly capabilities: readonly ToolCapability[];
   readonly input: unknown;
   readonly preview?: unknown;
+  readonly operationId?: string;
+  readonly approvalDigest?: string;
+}
+
+/** 审批和执行共享的不可变计划；payload 只在本进程内交给工具实现。 */
+export interface PreparedToolOperation {
+  readonly operationId: string;
+  readonly preview: unknown;
+  readonly approvalDigest: string;
+  readonly payload: unknown;
 }
 
 /** 所有消息共有的文本内容。 */
@@ -263,6 +273,8 @@ export interface ToolContext {
   readonly changeTracker?: {
     recordBeforeWrite(absolutePath: string, relativePath: string, originalContent: string): void;
   };
+  /** Registry 在审批阶段注入，避免策略再次规划同一副作用。 */
+  readonly preparedOperation?: PreparedToolOperation;
 }
 
 /** 工具执行前的授权策略。 */
@@ -280,6 +292,8 @@ export interface Tool<TInput = unknown> {
   readonly manifest?: ToolManifest;
   /** 在执行前生成可供审批查看的预览结果。 */
   preview?(input: TInput, context: ToolContext): Promise<unknown> | unknown;
+  prepare?(input: TInput, context: ToolContext): Promise<PreparedToolOperation> | PreparedToolOperation;
+  executePrepared?(operation: PreparedToolOperation, context: ToolContext): Promise<unknown> | unknown;
   /** 执行工具并返回结构化或文本结果。 */
   execute(input: TInput, context: ToolContext): Promise<unknown> | unknown;
 }

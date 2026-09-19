@@ -143,7 +143,7 @@ export class DefaultApprovalPolicy implements ApprovalPolicy {
 
   /** 根据工具能力决定是否自动通过或交给确认回调。 */
   requestApproval(request: ApprovalRequest): Promise<boolean> | boolean {
-    if (request.capabilities.every((capability) => capability === "read")) return true;
+    if (request.capabilities.length > 0 && request.capabilities.every((capability) => capability === "read")) return true;
     return this.confirm?.(request) ?? false;
   }
 }
@@ -189,12 +189,13 @@ export class SecurityPolicy implements ToolExecutionPolicy {
     }
     if (manifest.capabilities.length > 0 && manifest.capabilities.every((capability) => capability === "read")) return;
     /** 在请求审批前生成预览，让审批方看到即将发生的精确变更。 */
-    const preview = tool.preview ? await tool.preview(input, _context) : undefined;
+    const preview = _context.preparedOperation?.preview ?? (tool.preview ? await tool.preview(input, _context) : undefined);
     const request: ApprovalRequest = {
       toolName: tool.name,
       capabilities: manifest.capabilities,
       input,
       preview,
+      ...(_context.preparedOperation ? { operationId: _context.preparedOperation.operationId, approvalDigest: _context.preparedOperation.approvalDigest } : {}),
     };
     /** 必须先完成授权，注册表才会调用工具并触发副作用。 */
     await this.options.onApprovalRequired?.(request);

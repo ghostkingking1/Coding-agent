@@ -4,7 +4,7 @@ import { createRunTestsModelInputSchema } from "./model-tool-schemas.ts";
 import type { WorkspacePolicy } from "./security.ts";
 import { argsInputSchema, envInputSchema, singleLineTextSchema } from "./tool-input-schemas.ts";
 import { defineTool, validateToolInput } from "./tool-schema.ts";
-import type { Tool, ToolContext } from "../agent/types.ts";
+import type { PreparedToolOperation, Tool, ToolContext } from "../agent/types.ts";
 
 /** run_tests 工具的安全和资源限制配置。 */
 export interface RunTestsToolOptions extends RunCommandToolOptions {
@@ -85,11 +85,35 @@ export function createRunTestsTool(policy: WorkspacePolicy, options: RunTestsToo
     async preview(input, context) {
       return buildRunTestsPreview(await previewCommand(commandTool, input, context), input);
     },
+    async prepare(input, context) {
+      if (!commandTool.prepare) throw new Error("run_command prepare is required");
+      const commandOperation = await commandTool.prepare(toRunCommandInput(input), context);
+      return {
+        operationId: `tests_${commandOperation.operationId}`,
+        preview: buildRunTestsPreview(commandOperation.preview as RunCommandPreview, input),
+        approvalDigest: commandOperation.approvalDigest,
+        payload: { commandOperation, input },
+      };
+    },
+    async executePrepared(operation, context) {
+      if (!commandTool.executePrepared) throw new Error("run_command executePrepared is required");
+      const prepared = preparedTests(operation);
+      const result = await commandTool.executePrepared(prepared.commandOperation, context) as RunCommandResult;
+      return buildRunTestsResult(result, prepared.input);
+    },
     async execute(input, context) {
       const result = await commandTool.execute(toRunCommandInput(input), context) as RunCommandResult;
       return buildRunTestsResult(result, input);
     },
   });
+}
+
+function preparedTests(operation: PreparedToolOperation): { commandOperation: PreparedToolOperation; input: ParsedRunTestsInput } {
+  const value = operation.payload as { commandOperation?: PreparedToolOperation; input?: ParsedRunTestsInput } | undefined;
+  if (!value?.commandOperation || !value.input || value.commandOperation.approvalDigest !== operation.approvalDigest) {
+    throw new Error("Prepared test operation does not match its approval digest");
+  }
+  return { commandOperation: value.commandOperation, input: value.input };
 }
 
 async function previewCommand(commandTool: Tool, input: ParsedRunTestsInput, context: ToolContext): Promise<RunCommandPreview> {
