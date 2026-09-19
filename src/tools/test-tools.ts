@@ -1,15 +1,23 @@
 import { z } from "zod";
+import crypto from "node:crypto";
+import fs from "node:fs/promises";
+import path from "node:path";
 import { createRunCommandTool, DEFAULT_MAX_COMMAND_TIMEOUT_MS, type RunCommandInput, type RunCommandPreview, type RunCommandResult, type RunCommandToolOptions } from "./command-tools.ts";
 import { createRunTestsModelInputSchema } from "./model-tool-schemas.ts";
 import type { WorkspacePolicy } from "./security.ts";
 import { argsInputSchema, envInputSchema, singleLineTextSchema } from "./tool-input-schemas.ts";
 import { defineTool, validateToolInput } from "./tool-schema.ts";
-import type { PreparedToolOperation, Tool, ToolContext } from "../agent/types.ts";
+import type { PreparedToolOperation, Tool, ToolContext, VerificationEvidence } from "../agent/types.ts";
 
 /** run_tests 工具的安全和资源限制配置。 */
 export interface RunTestsToolOptions extends RunCommandToolOptions {
   /** 默认执行的 npm script。 */
   readonly defaultScript?: string;
+  /** 只有本地策略列出的 script 才能由模型选择，默认仅允许 defaultScript。 */
+  readonly allowedScripts?: readonly string[];
+  /** 默认禁止模型追加 runner 参数，避免用 --help 等参数制造无测试的退出码 0。 */
+  readonly allowAdditionalArgs?: boolean;
+  readonly allowedOutputPatterns?: readonly string[];
 }
 
 /** run_tests 审批预览，不包含环境变量值。 */
@@ -28,7 +36,7 @@ export interface RunTestsPreview {
 
 /** run_tests 执行完成后的结构化结果。 */
 export interface RunTestsResult extends RunTestsPreview {
-  readonly status: "passed" | "failed" | "timed_out" | "aborted" | "error";
+  readonly status: "passed" | "failed" | "timed_out" | "aborted" | "error" | "inconclusive";
   readonly passed: boolean;
   readonly exitCode: number | null;
   readonly signal: NodeJS.Signals | null;
@@ -40,13 +48,14 @@ export interface RunTestsResult extends RunTestsPreview {
   readonly aborted: boolean;
   readonly durationMs: number;
   readonly error?: string;
+  readonly evidence: VerificationEvidence;
 }
 
 const DEFAULT_TEST_SCRIPT = "test";
 
-const createRunTestsInputSchema = (defaultScript: string) => z.object({
-  script: singleLineTextSchema.optional(),
-  args: argsInputSchema.optional(),
+const createRunTestsInputSchema = (defaultScript: string, allowedScripts: readonly string[], allowAdditionalArgs: boolean) => z.object({
+  script: singleLineTextSchema.refine((value) => allowedScripts.includes(value), "script is not allowed by local verification policy").optional(),
+  args: argsInputSchema.refine((value) => allowAdditionalArgs || value.length === 0, "test arguments are not allowed by local verification policy").optional(),
   cwd: singleLineTextSchema.optional(),
   timeoutMs: z.number().int().min(1).optional(),
   env: envInputSchema.optional(),
@@ -67,7 +76,12 @@ export function createRunTestsTool(policy: WorkspacePolicy, options: RunTestsToo
   const commandTool = createRunCommandTool(policy, options);
   const defaultScript = options.defaultScript ?? DEFAULT_TEST_SCRIPT;
   validateToolInput(singleLineTextSchema, defaultScript);
-  const runTestsInputSchema = createRunTestsInputSchema(defaultScript);
+  const allowedScripts = [...new Set(options.allowedScripts ?? [defaultScript])];
+  if (!allowedScripts.includes(defaultScript)) throw new Error("allowedScripts must include defaultScript");
+  for (const script of allowedScripts) validateToolInput(singleLineTextSchema, script);
+  const allowAdditionalArgs = options.allowAdditionalArgs ?? false;
+  const allowedOutputPatterns = options.allowedOutputPatterns ?? ["node_modules/.cache/**", "coverage/**", "target/**", "**/__pycache__/**"];
+  const runTestsInputSchema = createRunTestsInputSchema(defaultScript, allowedScripts, allowAdditionalArgs);
 
   return defineTool({
     name: "run_tests",
@@ -77,15 +91,18 @@ export function createRunTestsTool(policy: WorkspacePolicy, options: RunTestsToo
       kind: "test",
       isSuccessful: (result: unknown) => {
         const value = result as Partial<RunTestsResult> | null;
-        return value?.status === "passed" && value?.passed === true;
+        return value?.evidence?.status === "passed" && value?.passed === true;
       },
+      toEvidence: (result: unknown) => (result as RunTestsResult).evidence,
     },
     inputSchema: runTestsInputSchema,
-    modelInputSchema: createRunTestsModelInputSchema(defaultScript, options.maxTimeoutMs ?? DEFAULT_MAX_COMMAND_TIMEOUT_MS),
+    modelInputSchema: createRunTestsModelInputSchema(defaultScript, options.maxTimeoutMs ?? DEFAULT_MAX_COMMAND_TIMEOUT_MS, allowedScripts, allowAdditionalArgs),
     async preview(input, context) {
+      await assertTrustedScript(policy, input);
       return buildRunTestsPreview(await previewCommand(commandTool, input, context), input);
     },
     async prepare(input, context) {
+      await assertTrustedScript(policy, input);
       if (!commandTool.prepare) throw new Error("run_command prepare is required");
       const commandOperation = await commandTool.prepare(toRunCommandInput(input), context);
       return {
@@ -99,11 +116,12 @@ export function createRunTestsTool(policy: WorkspacePolicy, options: RunTestsToo
       if (!commandTool.executePrepared) throw new Error("run_command executePrepared is required");
       const prepared = preparedTests(operation);
       const result = await commandTool.executePrepared(prepared.commandOperation, context) as RunCommandResult;
-      return buildRunTestsResult(result, prepared.input);
+      return buildRunTestsResult(result, prepared.input, allowedOutputPatterns);
     },
     async execute(input, context) {
+      await assertTrustedScript(policy, input);
       const result = await commandTool.execute(toRunCommandInput(input), context) as RunCommandResult;
-      return buildRunTestsResult(result, input);
+      return buildRunTestsResult(result, input, allowedOutputPatterns);
     },
   });
 }
@@ -146,12 +164,13 @@ function buildRunTestsPreview(commandPreview: RunCommandPreview, input: ParsedRu
   };
 }
 
-function buildRunTestsResult(commandResult: RunCommandResult, input: ParsedRunTestsInput): RunTestsResult {
+function buildRunTestsResult(commandResult: RunCommandResult, input: ParsedRunTestsInput, allowedOutputPatterns: readonly string[]): RunTestsResult {
   const status = testStatus(commandResult);
+  const evidence = buildEvidence(commandResult, status, allowedOutputPatterns);
   return {
     ...buildRunTestsPreview(commandResult, input),
-    status,
-    passed: status === "passed",
+    status: status === "passed" && evidence.status === "inconclusive" ? "inconclusive" : status,
+    passed: evidence.status === "passed",
     exitCode: commandResult.exitCode,
     signal: commandResult.signal,
     stdout: commandResult.stdout,
@@ -162,7 +181,52 @@ function buildRunTestsResult(commandResult: RunCommandResult, input: ParsedRunTe
     aborted: commandResult.aborted,
     durationMs: commandResult.durationMs,
     error: commandResult.error,
+    evidence,
   };
+}
+
+function buildEvidence(commandResult: RunCommandResult, status: RunTestsResult["status"], allowedOutputPatterns: readonly string[]): VerificationEvidence {
+  const output = `${commandResult.stdout}\n${commandResult.stderr}`;
+  const count = parseTestCount(output);
+  const noTests = count === 0 || /\bno tests? (?:found|run|executed)\b/i.test(output);
+  const evidenceStatus = status === "passed" && !noTests ? "passed" : status === "failed" ? "failed" : "inconclusive";
+  return {
+    evidenceId: crypto.randomUUID(),
+    toolName: "run_tests",
+    kind: "test",
+    status: evidenceStatus,
+    reason: noTests ? "test runner reported no executed tests" : status === "passed" ? "trusted test command completed with exit code 0" : status === "failed" ? "test command returned a non-zero exit code" : `test command ended with status ${status}`,
+    recordedAt: new Date().toISOString(),
+    commandDigest: commandResult.requestDigest,
+    policyDigest: commandResult.policyDigest,
+    exitCode: commandResult.exitCode,
+    ...(count === undefined ? {} : { testCount: count }),
+    parser: count === undefined ? "exit_code" : "generic_test_count",
+    isolation: commandResult.sandbox,
+    allowedOutputPatterns,
+  };
+}
+
+function parseTestCount(output: string): number | undefined {
+  const match = output.match(/(?:^|\s)(\d+)\s+(?:tests?|passing)(?:\s|$)/i);
+  return match ? Number(match[1]) : undefined;
+}
+
+async function assertTrustedScript(policy: WorkspacePolicy, input: ParsedRunTestsInput): Promise<void> {
+  const cwd = policy.resolveDirectory(input.cwd ?? ".");
+  const packagePath = path.join(cwd, "package.json");
+  let document: unknown;
+  try {
+    const text = await fs.readFile(packagePath, "utf8");
+    if (Buffer.byteLength(text, "utf8") > policy.maxFileBytes) throw new Error("package.json exceeds workspace file limit");
+    document = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`Cannot resolve trusted npm test script: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const scripts = document && typeof document === "object" && !Array.isArray(document) ? (document as { scripts?: unknown }).scripts : undefined;
+  if (!scripts || typeof scripts !== "object" || Array.isArray(scripts) || typeof (scripts as Record<string, unknown>)[input.script] !== "string") {
+    throw new Error(`Trusted npm script is not declared: ${input.script}`);
+  }
 }
 
 function testStatus(result: RunCommandResult): RunTestsResult["status"] {

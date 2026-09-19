@@ -70,6 +70,8 @@ export type {
   TaskState,
   VerificationPolicy,
   VerificationSummary,
+  VerificationEvidence,
+  VerificationStatus,
   ToolMessage,
   UserMessage,
   RunEvent,

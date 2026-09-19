@@ -13,13 +13,35 @@ export interface VerificationPolicy {
   readonly maxRepairAttempts?: number;
 }
 
+export type VerificationStatus = "not_required" | "pending" | "passed" | "failed" | "inconclusive" | "unavailable";
+
+/** 一次验证执行的不可变、可审计判定；后续检查点只消费 passed 证据。 */
+export interface VerificationEvidence {
+  readonly evidenceId: string;
+  readonly toolName: string;
+  readonly kind: "test";
+  readonly status: Exclude<VerificationStatus, "not_required" | "pending">;
+  readonly reason: string;
+  readonly recordedAt: string;
+  readonly commandDigest?: string;
+  readonly policyDigest?: string;
+  readonly exitCode?: number | null;
+  readonly testCount?: number;
+  readonly parser?: string;
+  readonly isolation?: { readonly backend: string; readonly version: string; readonly capabilities: readonly string[] };
+  /** 构建缓存等允许输出不属于受保护输入，不能单独令证据 stale。 */
+  readonly allowedOutputPatterns?: readonly string[];
+}
+
 export interface VerificationSummary {
   readonly required: boolean;
   readonly writeObserved: boolean;
+  readonly status: VerificationStatus;
   readonly verifierTool?: string;
   readonly verificationPassed: boolean;
   readonly verificationAttempts: number;
   readonly repairAttempts: number;
+  readonly evidence: readonly VerificationEvidence[];
 }
 
 /** 工具输入 schema 使用 Zod，便于运行时校验后把 unknown 收窄为工具自己的输入类型。 */
@@ -50,6 +72,7 @@ export interface ToolManifest {
   readonly verification?: {
     readonly kind: "test";
     readonly isSuccessful: (result: unknown) => boolean;
+    readonly toEvidence?: (result: unknown, toolName: string) => VerificationEvidence;
   };
 }
 

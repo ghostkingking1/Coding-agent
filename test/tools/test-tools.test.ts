@@ -147,3 +147,37 @@ test("run_tests only exposes allowlisted environment variables", async () => {
     assert.equal(result.envKeys.includes("BAR"), false);
   });
 });
+
+test("run_tests rejects scripts and arguments not allowed by local policy", async () => {
+  await withWorkspace(async (root) => {
+    await writePackage(root, { test: "node ./pass.js", arbitrary: "node ./pass.js" });
+    await fs.writeFile(path.join(root, "pass.js"), "console.log('ok')\n");
+    const tool = createRunTestsTool(new WorkspacePolicy({ root }), { sandbox: hostSandbox });
+
+    await assert.rejects(() => executeTool(tool, { script: "arbitrary" }), /script is not allowed/);
+    await assert.rejects(() => executeTool(tool, { args: ["--help"] }), /test arguments are not allowed/);
+  });
+});
+
+test("run_tests treats a zero-test success as inconclusive evidence", async () => {
+  await withWorkspace(async (root) => {
+    await writePackage(root, { test: "node ./empty.js" });
+    await fs.writeFile(path.join(root, "empty.js"), "console.log('0 tests')\n");
+    const tool = createRunTestsTool(new WorkspacePolicy({ root }), { sandbox: hostSandbox });
+
+    const result = await executeTool(tool, {}) as RunTestsResult;
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.status, "inconclusive");
+    assert.equal(result.passed, false);
+    assert.equal(result.evidence.status, "inconclusive");
+    assert.equal(result.evidence.testCount, 0);
+  });
+});
+
+test("run_tests requires the trusted script to exist in package.json", async () => {
+  await withWorkspace(async (root) => {
+    await writePackage(root, { lint: "node -e \"\"" });
+    const tool = createRunTestsTool(new WorkspacePolicy({ root }), { sandbox: hostSandbox });
+    await assert.rejects(() => executeTool(tool, {}), /Trusted npm script is not declared/);
+  });
+});

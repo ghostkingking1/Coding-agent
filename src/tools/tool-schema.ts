@@ -1,5 +1,5 @@
 import { z, ZodError } from "zod";
-import type { JsonSchema, PreparedToolOperation, Tool, ToolCapability, ToolContext, ToolInputSchema } from "../agent/types.ts";
+import type { JsonSchema, PreparedToolOperation, Tool, ToolCapability, ToolContext, ToolInputSchema, VerificationEvidence } from "../agent/types.ts";
 
 /** 工具输入不符合 schema 时抛出的错误。 */
 export class ToolInputValidationError extends Error {
@@ -17,7 +17,7 @@ export interface ToolDefinition<TSchema extends ToolInputSchema> {
   readonly capabilities: readonly ToolCapability[];
   readonly parallelizable?: boolean;
   readonly conflictKey?: (input: z.output<TSchema>) => string | undefined;
-  readonly verification?: { readonly kind: "test"; readonly isSuccessful: (result: unknown) => boolean };
+  readonly verification?: { readonly kind: "test"; readonly isSuccessful: (result: unknown) => boolean; readonly toEvidence?: (result: unknown, toolName: string) => VerificationEvidence };
   readonly inputSchema: TSchema;
   /** 发送给模型的 JSON Schema；本地执行仍必须经过 inputSchema 校验。 */
   readonly modelInputSchema?: JsonSchema;

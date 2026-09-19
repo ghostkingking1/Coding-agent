@@ -110,12 +110,12 @@ export function createRunCommandModelInputSchema(maxTimeoutMs: number): JsonSche
 }
 
 /** 创建 run_tests 的模型参数 schema；默认 script 只描述模型输入，仍由本地 Zod 注入。 */
-export function createRunTestsModelInputSchema(defaultScript: string, maxTimeoutMs: number): JsonSchema {
+export function createRunTestsModelInputSchema(defaultScript: string, maxTimeoutMs: number, allowedScripts: readonly string[] = [defaultScript], allowAdditionalArgs = false): JsonSchema {
   return {
     type: "object",
     properties: {
-      script: { ...singleLineTextSchema, default: defaultScript },
-      args: { type: "array", items: commandArgumentSchema, default: [] },
+      script: { ...singleLineTextSchema, enum: allowedScripts, default: defaultScript },
+      ...(allowAdditionalArgs ? { args: { type: "array", items: commandArgumentSchema, default: [] } } : {}),
       cwd: { ...workspacePathSchema, default: "." },
       timeoutMs: { type: "integer", minimum: 1, maximum: maxTimeoutMs },
       env: { ...environmentSchema, default: {} },

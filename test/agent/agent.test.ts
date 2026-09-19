@@ -357,7 +357,15 @@ test("coding verification requires a passing run_tests after a write", async () 
   assert.equal(result.finalText, "verified");
   assert.equal(result.taskState, "completed");
   assert.equal(result.stopReason, "completed");
-  assert.deepEqual(result.verification, { required: true, writeObserved: true, verifierTool: "run_tests", verificationPassed: true, verificationAttempts: 1, repairAttempts: 0 });
+  assert.equal(result.verification.required, true);
+  assert.equal(result.verification.writeObserved, true);
+  assert.equal(result.verification.status, "passed");
+  assert.equal(result.verification.verifierTool, "run_tests");
+  assert.equal(result.verification.verificationPassed, true);
+  assert.equal(result.verification.verificationAttempts, 1);
+  assert.equal(result.verification.repairAttempts, 0);
+  assert.equal(result.verification.evidence.length, 1);
+  assert.equal(result.verification.evidence[0]?.status, "passed");
 });
 
 test("coding verification injects a private reminder when the model finishes early", async () => {
@@ -439,6 +447,7 @@ test("coding verification ignores run_tests before any successful write", async 
   const result = await new Agent(model, createCodingTools({ status: "passed", passed: true }), { verification: { mode: "coding" } }).run("inspect");
   assert.equal(result.taskState, "completed");
   assert.equal(result.verification.required, false);
+  assert.equal(result.verification.status, "not_required");
   assert.equal(result.verification.verificationAttempts, 0);
 });
 

@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { TaskStateMachine } from "../../src/agent/task-state-machine.ts";
+import type { VerificationEvidence } from "../../src/agent/types.ts";
+
+function evidence(status: "passed" | "failed" | "inconclusive" = "passed"): VerificationEvidence {
+  return { evidenceId: `e-${status}`, toolName: "run_tests", kind: "test", status, reason: status, recordedAt: "2026-01-01T00:00:00.000Z" };
+}
 
 test("task state machine emits legal transitions and tracks verification", async () => {
   const transitions: string[] = [];
@@ -10,18 +15,20 @@ test("task state machine emits legal transitions and tracks verification", async
 
   await machine.start();
   await machine.observeWrite("apply_patch");
-  await machine.observeVerification("run_tests", false);
+  await machine.observeVerification("run_tests", evidence("failed"));
   await machine.beginWork();
-  await machine.observeVerification("run_tests", true);
+  await machine.observeVerification("run_tests", evidence());
   assert.equal(await machine.complete(), true);
   assert.equal(machine.state, "completed");
   assert.deepEqual(machine.summary(), {
     required: true,
     writeObserved: true,
+    status: "passed",
     verifierTool: "run_tests",
     verificationPassed: true,
     verificationAttempts: 2,
     repairAttempts: 1,
+    evidence: [evidence("failed"), evidence()],
   });
   assert.deepEqual(transitions.map((value) => value.split(":", 1)[0]), [
     "received->working",
@@ -37,11 +44,11 @@ test("task state machine blocks after the configured repair limit", async () => 
   const machine = new TaskStateMachine({ mode: "coding", maxRepairAttempts: 3 });
   await machine.start();
   await machine.observeWrite("apply_patch");
-  await machine.observeVerification("run_tests", false);
+  await machine.observeVerification("run_tests", evidence("failed"));
   await machine.beginWork();
-  await machine.observeVerification("run_tests", false);
+  await machine.observeVerification("run_tests", evidence("failed"));
   await machine.beginWork();
-  await machine.observeVerification("run_tests", false);
+  await machine.observeVerification("run_tests", evidence("failed"));
   assert.equal(machine.state, "blocked");
   assert.equal(machine.isBlocked, true);
   assert.equal(machine.requiresVerification, true);
@@ -54,4 +61,16 @@ test("task state machine rejects re-entering a terminal state", async () => {
   await machine.start();
   assert.equal(await machine.complete(), true);
   await assert.rejects(() => machine.observeWrite("apply_patch"), /Completed task cannot observe a write/);
+});
+
+test("a later write makes passed evidence pending without deleting its audit history", async () => {
+  const machine = new TaskStateMachine({ mode: "coding" });
+  await machine.start();
+  await machine.observeWrite("apply_patch");
+  await machine.observeVerification("run_tests", evidence());
+  await machine.observeWrite("apply_patch");
+  assert.equal(machine.requiresVerification, true);
+  assert.equal(machine.summary().status, "pending");
+  assert.equal(machine.summary().verificationPassed, false);
+  assert.equal(machine.summary().evidence.length, 1);
 });

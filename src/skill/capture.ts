@@ -24,7 +24,7 @@ export function createSkillDraft(session: SessionResult, name: string, workspace
   const safeGoal = sanitize(user ?? "Complete the verified coding workflow");
   const uniqueCalls = [...new Set(calls)].filter((value) => /^[A-Za-z0-9_-]+$/.test(value));
   const uniquePaths = [...new Set(paths)].filter((value) => value.length < 200).map((value) => path.extname(value) || value.split(/[\\/]/).at(-1) || value);
-  const evidence = [`run ${latest.runId}`, `task state ${latest.taskState}`, `verification ${latest.verification.verificationPassed ? "passed" : "not required"}`, ...(uniqueCalls.length ? [`tools: ${uniqueCalls.join(", ")}`] : []), ...(uniquePaths.length ? [`file patterns: ${[...new Set(uniquePaths)].join(", ")}`] : [])];
+  const evidence = [`run ${latest.runId}`, `task state ${latest.taskState}`, `verification ${latest.verification.status}`, ...(uniqueCalls.length ? [`tools: ${uniqueCalls.join(", ")}`] : []), ...(uniquePaths.length ? [`file patterns: ${[...new Set(uniquePaths)].join(", ")}`] : [])];
   const target: SkillSource = global ? "user" : "repository";
   const root = global ? userRoot : path.join(workspaceRoot, ".codex", "skills");
   const manifest: SkillManifest = { name, description: `Reusable workflow for: ${safeGoal.slice(0, 180)}`, version: "1.0.0", triggers: ["repeat this workflow", safeGoal.slice(0, 120)], tags: ["workflow", "verified"] };
