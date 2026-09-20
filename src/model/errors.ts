@@ -18,6 +18,9 @@ export interface ModelTransportErrorOptions {
   readonly requestId?: string;
   /** 仅保存 WWW-Authenticate 中已解析且经过安全校验的 metadata URL。 */
   readonly resourceMetadataUrl?: string;
+  /** 仅暴露经过校验的协议版本错误字段，不保存响应正文。 */
+  readonly rpcErrorCode?: number;
+  readonly supportedProtocolVersions?: readonly string[];
 }
 
 /**
@@ -29,6 +32,9 @@ export class ModelTransportError extends Error {
   readonly retryAfterMs?: number;
   readonly requestId?: string;
   readonly resourceMetadataUrl?: string;
+  /** 仅暴露经过校验的协议版本错误字段，不保存响应正文。 */
+  readonly rpcErrorCode?: number;
+  readonly supportedProtocolVersions?: readonly string[];
 
   constructor(code: ModelTransportErrorCode, message: string, options: ModelTransportErrorOptions = {}) {
     super(message);
@@ -38,5 +44,7 @@ export class ModelTransportError extends Error {
     this.retryAfterMs = options.retryAfterMs;
     this.requestId = options.requestId;
     this.resourceMetadataUrl = options.resourceMetadataUrl;
+    this.rpcErrorCode = options.rpcErrorCode;
+    this.supportedProtocolVersions = options.supportedProtocolVersions;
   }
 }

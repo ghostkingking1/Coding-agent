@@ -6,7 +6,9 @@ import { McpProtocolError } from "./mcp.ts";
 import { FileCredentialStore, OAuthAuthenticator, discoverAuthorizationServerMetadata, discoverProtectedResourceMetadata, type CredentialStore, type OAuthAuthorizationServerMetadata } from "./mcp-auth.ts";
 import type { McpClient, McpListedTool, McpPrompt, McpPromptResult, McpResource, McpResourceResult, McpToolResult } from "./mcp-types.ts";
 
-const PROTOCOL_VERSIONS = ["2026-07-28", "2025-03-26", "2024-11-05"] as const;
+const MODERN_PROTOCOL_VERSIONS = ["2026-07-28"] as const;
+const LEGACY_PROTOCOL_VERSIONS = ["2025-11-25"] as const;
+const ACCEPTED_PROTOCOL_VERSIONS = ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25", "2026-07-28"] as const;
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_MESSAGE_BYTES = 256 * 1024;
 const DEFAULT_MAX_TOOL_COUNT = 64;
@@ -68,6 +70,7 @@ export class McpRemoteClient implements McpClient {
   private readonly fetch?: typeof globalThis.fetch;
   private readonly semaphore: Semaphore;
   private protocolVersion?: string;
+  private mode?: "modern" | "legacy";
   private remoteSessionId?: string;
   private initialized = false;
   private initialization?: Promise<void>;
@@ -165,6 +168,7 @@ export class McpRemoteClient implements McpClient {
   async close(): Promise<void> {
     this.initialized = false;
     this.protocolVersion = undefined;
+    this.mode = undefined;
     this.remoteSessionId = undefined;
     this.lastEventId = undefined;
     this.tools = undefined;
@@ -183,30 +187,48 @@ export class McpRemoteClient implements McpClient {
   }
 
   private async initializeOnce(signal?: AbortSignal): Promise<void> {
+    try {
+      let version: string = MODERN_PROTOCOL_VERSIONS[0];
+      let result: unknown;
+      try { result = await this.request("server/discover", {}, signal, true, version, true); }
+      catch (error) {
+        const supported = error instanceof ModelTransportError ? error.supportedProtocolVersions : error instanceof RemoteRpcError ? error.supportedProtocolVersions : undefined;
+        const code = error instanceof ModelTransportError ? error.rpcErrorCode : error instanceof RemoteRpcError ? error.rpcErrorCode : undefined;
+        if (code !== -32022) throw error;
+        const compatible = supported?.find((candidate) => ACCEPTED_PROTOCOL_VERSIONS.includes(candidate as typeof ACCEPTED_PROTOCOL_VERSIONS[number]));
+        if (!compatible || compatible === version) throw new McpProtocolError("MCP server does not support a compatible protocol version");
+        version = compatible;
+        result = await this.request("server/discover", {}, signal, true, version, true);
+      }
+      if (!isRecord(result) || !Array.isArray(result.supportedVersions)) throw new McpProtocolError("Invalid MCP server/discover response");
+      const selected = result.supportedVersions.find((candidate): candidate is string => candidate === version);
+      if (!selected) throw new McpProtocolError("MCP server does not support a compatible protocol version");
+      const capabilities = isRecord(result.capabilities) ? result.capabilities : {};
+      this.serverCapabilities = { tools: "tools" in capabilities, resources: "resources" in capabilities, prompts: "prompts" in capabilities };
+      this.protocolVersion = selected;
+      this.mode = "modern";
+      this.initialized = true;
+      return;
+    } catch (error) {
+      if (!(error instanceof ModelTransportError) || ![400, 404, 405].includes(error.status ?? 0) || error.rpcErrorCode === -32022) throw error;
+    }
     let lastError: unknown;
-    for (const version of PROTOCOL_VERSIONS) {
-      if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new McpProtocolError("MCP request aborted");
+    for (const version of LEGACY_PROTOCOL_VERSIONS) {
       try {
         const result = await this.request("initialize", { protocolVersion: version, capabilities: {}, clientInfo: { name: "coding-agent", version: "0.1.0" } }, signal, true, version);
         if (!isRecord(result) || typeof result.protocolVersion !== "string" || !isRecord(result.serverInfo) || typeof result.serverInfo.name !== "string") throw new McpProtocolError("Invalid MCP initialize response");
-        if (!PROTOCOL_VERSIONS.includes(result.protocolVersion as typeof PROTOCOL_VERSIONS[number])) throw new McpProtocolError("MCP server returned an unsupported protocol version");
+        if (!ACCEPTED_PROTOCOL_VERSIONS.includes(result.protocolVersion as typeof ACCEPTED_PROTOCOL_VERSIONS[number])) throw new McpProtocolError("MCP server returned an unsupported protocol version");
         const capabilities = isRecord(result.capabilities) ? result.capabilities : {};
         this.serverCapabilities = { tools: "tools" in capabilities, resources: "resources" in capabilities, prompts: "prompts" in capabilities };
         this.protocolVersion = result.protocolVersion;
+        this.mode = "legacy";
         await this.notify("notifications/initialized", {}, signal);
         this.initialized = true;
         return;
-      } catch (error) {
-        lastError = error;
-        this.remoteSessionId = undefined;
-        this.protocolVersion = undefined;
-        this.serverCapabilities = undefined;
-        if (!isProtocolVersionRejection(error)) throw error;
-      }
+      } catch (error) { lastError = error; this.remoteSessionId = undefined; this.protocolVersion = undefined; if (!isProtocolVersionRejection(error)) throw error; }
     }
     throw lastError instanceof Error ? lastError : new McpProtocolError("MCP initialization failed");
   }
-
   private async listPage<T>(method: string, field: string, signal?: AbortSignal): Promise<PageResult<T>> {
     const values: T[] = [];
     let cursor: string | undefined;
@@ -239,11 +261,11 @@ export class McpRemoteClient implements McpClient {
     await this.send(method, params, signal, false, true);
   }
 
-  private async request(method: string, params: JsonObject, signal: AbortSignal | undefined, retryAuth: boolean, protocolVersion = this.protocolVersion): Promise<unknown> {
-    return this.send(method, params, signal, retryAuth, false, protocolVersion);
+  private async request(method: string, params: JsonObject, signal: AbortSignal | undefined, retryAuth: boolean, protocolVersion = this.protocolVersion, modernProbe = false): Promise<unknown> {
+    return this.send(method, params, signal, retryAuth, false, protocolVersion, method !== "tools/call", modernProbe);
   }
 
-  private async send(method: string, params: JsonObject, signal: AbortSignal | undefined, retryAuth: boolean, notification: boolean, protocolVersion = this.protocolVersion, retrySafe = method !== "tools/call" && method !== "initialize" && method !== "notifications/initialized"): Promise<unknown> {
+  private async send(method: string, params: JsonObject, signal: AbortSignal | undefined, retryAuth: boolean, notification: boolean, protocolVersion = this.protocolVersion, retrySafe = method !== "tools/call" && method !== "initialize" && method !== "notifications/initialized", modernProbe = false): Promise<unknown> {
     const release = await this.semaphore.acquire(signal);
     try {
       const id = notification ? undefined : ++this.sequence;
@@ -252,14 +274,19 @@ export class McpRemoteClient implements McpClient {
       for (;;) {
         const headers: Record<string, string> = { accept: "application/json, text/event-stream", "content-type": "application/json", "user-agent": this.userAgent };
         if (protocolVersion) headers["mcp-protocol-version"] = protocolVersion;
-        if (this.remoteSessionId) headers["mcp-session-id"] = this.remoteSessionId;
-        if (this.lastEventId) headers["last-event-id"] = this.lastEventId;
+        if (!modernProbe && this.mode !== "modern" && this.remoteSessionId) headers["mcp-session-id"] = this.remoteSessionId;
+        if (!modernProbe && this.mode !== "modern" && this.lastEventId) headers["last-event-id"] = this.lastEventId;
         this.oauthMetadata ??= this.config.oauth?.authorizationServer
           ? await discoverAuthorizationServerMetadata(this.config.oauth.authorizationServer, signal, this.fetch)
           : undefined;
         const credential = await this.authenticator.getAccessToken(this.serverId, this.config.endpoint, this.oauthMetadata, { clientId: this.config.oauth?.clientId, resource: this.config.oauth?.resource, scopes: this.config.oauth?.scopes }, signal);
         if (credential) headers.authorization = `${credential.tokenType} ${credential.accessToken}`;
-        const body = JSON.stringify({ jsonrpc: "2.0", ...(id === undefined ? {} : { id }), method, params });
+        const modern = modernProbe || this.mode === "modern";
+        if (modern) {
+          headers["mcp-method"] = method;
+          if (typeof params.name === "string") headers["mcp-name"] = params.name;
+        }
+        const body = JSON.stringify({ jsonrpc: "2.0", ...(id === undefined ? {} : { id }), method, params: modern ? { ...params, _meta: { protocolVersion: protocolVersion ?? MODERN_PROTOCOL_VERSIONS[0], clientInfo: { name: "coding-agent", version: "0.1.0" }, clientCapabilities: {} } } : params });
         if (Buffer.byteLength(body, "utf8") > this.config.maxMessageBytes) throw new McpProtocolError("MCP request exceeds message limit");
         let response;
         try {
@@ -277,20 +304,20 @@ export class McpRemoteClient implements McpClient {
           }
           throw error;
         }
-        const sessionId = response.headers.get("mcp-session-id");
+        const sessionId = modern ? null : response.headers.get("mcp-session-id");
         if (sessionId) this.remoteSessionId = sessionId;
-        const responseEventId = response.headers.get("last-event-id");
+        const responseEventId = modern ? null : response.headers.get("last-event-id");
         if (responseEventId) this.lastEventId = responseEventId.slice(0, MAX_CURSOR_LENGTH);
         if (notification) return undefined;
         const rpc = parseRpcResponse(response.bodyText, id!);
-        if (rpc.eventId) this.lastEventId = rpc.eventId.slice(0, MAX_CURSOR_LENGTH);
+        if (!modern && rpc.eventId) this.lastEventId = rpc.eventId.slice(0, MAX_CURSOR_LENGTH);
         if (rpc.error) {
           if (retryAuth && !authRetried && isUnauthorizedRpcError(rpc.error.code) && credential?.refreshToken) {
             authRetried = true;
             await this.refreshAfterUnauthorized(signal);
             continue;
           }
-          throw new McpProtocolError(`MCP ${method} failed: ${rpc.error.message ?? "remote protocol error"}`);
+          throw new RemoteRpcError(method, rpc.error.code, rpc.error.data);
         }
         if (!("result" in rpc)) throw new McpProtocolError(`MCP ${method} response has no result`);
         return rpc.result;
@@ -363,9 +390,19 @@ function parseSurface(field: string, value: unknown): never | McpListedTool | Mc
   if (value.arguments !== undefined && (!Array.isArray(value.arguments) || value.arguments.length > 128)) throw new McpProtocolError("Invalid MCP prompt arguments");
   return { name: value.name, ...(typeof value.description === "string" ? { description: value.description } : {}), ...(Array.isArray(value.arguments) ? { arguments: value.arguments.filter(isRecord).map((arg) => ({ name: typeof arg.name === "string" ? arg.name : "argument", ...(typeof arg.description === "string" ? { description: arg.description } : {}), ...(typeof arg.required === "boolean" ? { required: arg.required } : {}) })) } : {}) };
 }
+class RemoteRpcError extends McpProtocolError {
+  readonly rpcErrorCode?: number;
+  readonly supportedProtocolVersions?: readonly string[];
+  constructor(method: string, code?: number, data?: unknown) {
+    super(`MCP ${method} failed with remote protocol error`);
+    this.rpcErrorCode = code;
+    const supported = isRecord(data) ? data.supported : undefined;
+    if (code === -32022 && Array.isArray(supported) && supported.length <= 16 && supported.every((v) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v))) this.supportedProtocolVersions = supported;
+  }
+}
 function isProtocolVersionRejection(error: unknown): boolean {
-  if (error instanceof ModelTransportError) return error.status === 400 || error.status === 404 || error.status === 405;
-  return error instanceof McpProtocolError && /unsupported|protocol version/i.test(error.message);
+  if (error instanceof ModelTransportError) return [400, 404, 405].includes(error.status ?? 0);
+  return error instanceof RemoteRpcError && error.rpcErrorCode === -32022;
 }
 
 function parseRpcResponse(bodyText: string, id: number): ParsedRpcResponse {

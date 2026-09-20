@@ -107,7 +107,16 @@ export class OpenAICompatibleModel implements ModelClient {
     };
     const source = this.transport.stream ? this.transport.stream(streamRequest) : bufferedStream(this.transport, streamRequest);
     let pending = "";
-    for await (const text of source) {
+    const first = await sniffStream(source);
+    if (first.mode === "json") {
+      const value = JSON.parse(first.text);
+      const response = parseOpenAIResponse(value);
+      if (response.message.content) yield { type: "text_delta", text: response.message.content };
+      for (const call of response.message.toolCalls ?? []) yield { type: "tool_call_delta", index: 0, id: call.id, name: call.name, argumentsDelta: JSON.stringify(call.input) };
+      yield { type: "done", finishReason: response.finishReason };
+      return;
+    }
+    for await (const text of first.chunks) {
       pending += text;
       const lines = pending.split(/\r?\n/);
       pending = lines.pop() ?? "";
@@ -128,6 +137,23 @@ export class OpenAICompatibleModel implements ModelClient {
 }
 
 async function* bufferedStream(transport: HttpTransport, request: import("./transport.ts").HttpRequest): AsyncIterable<string> { yield (await transport.request(request)).bodyText; }
+
+async function sniffStream(source: AsyncIterable<string>): Promise<{ mode: "json"; text: string } | { mode: "sse"; chunks: AsyncIterable<string> }> {
+  const iterator = source[Symbol.asyncIterator](); let buffered = ""; let result = await iterator.next();
+  while (!result.done) {
+    buffered += result.value;
+    const trimmed = buffered.trimStart();
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      const rest = (async function*() { let r: IteratorResult<string> = result; while (!r.done) { yield r.value; r = await iterator.next(); } })();
+      let text = buffered; for await (const chunk of rest) text += chunk; return { mode: "json", text };
+    }
+    if (/data:/.test(buffered)) {
+      return { mode: "sse", chunks: (async function*() { yield buffered; let r = await iterator.next(); while (!r.done) { yield r.value; r = await iterator.next(); } })() };
+    }
+    result = await iterator.next();
+  }
+  return { mode: "json", text: buffered };
+}
 
 interface OpenAICompatibleRequest {
   readonly model: string;

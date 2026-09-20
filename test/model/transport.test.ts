@@ -155,3 +155,15 @@ function assertTransportError(error: unknown, code: string): asserts error is Mo
   assert.ok(error instanceof ModelTransportError);
   assert.equal(error.code, code);
 }
+test("exposes only bounded structured protocol version errors", async () => {
+  const transport = new FetchHttpTransport({ fetch: async () => new Response(JSON.stringify({ jsonrpc: "2.0", error: { code: -32022, message: "secret-token", data: { supported: ["2025-11-25"], requested: "2026-07-28", credential: "secret-token" } } }), { status: 400, headers: { "content-type": "application/json" } }) });
+  for (const request of [() => transport.request({ url: "https://example.invalid/mcp" }), () => transport.requestStream({ url: "https://example.invalid/mcp" })]) {
+    await assert.rejects(request, (error: unknown) => {
+      assertTransportError(error, "http_error");
+      assert.equal(error.rpcErrorCode, -32022);
+      assert.deepEqual(error.supportedProtocolVersions, ["2025-11-25"]);
+      assert.doesNotMatch(JSON.stringify(error), /secret-token|credential|requested/);
+      return true;
+    });
+  }
+});

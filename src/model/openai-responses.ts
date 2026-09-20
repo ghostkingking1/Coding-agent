@@ -28,8 +28,15 @@ export class OpenAIResponsesModel implements ModelClient {
   async *generateStream(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
     const req = { url: this.endpoint, init: this.init(request, true), signal: request.signal, timeoutMs: this.timeoutMs, maxResponseBytes: this.maxResponseBytes };
     const source = this.transport.stream ? this.transport.stream(req) : (async function* (t: HttpTransport) { yield (await t.request(req)).bodyText; })(this.transport);
+    const sniffed = await sniffStream(source);
+    if (sniffed.mode === "json") {
+      const response = parseResponse(JSON.parse(sniffed.text));
+      if (response.message.content) yield { type: "text_delta", text: response.message.content };
+      yield { type: "done", finishReason: response.finishReason };
+      return;
+    }
     let pending = ""; let done = false;
-    for await (const chunk of source) { pending += chunk; const lines = pending.split(/\r?\n/); pending = lines.pop() ?? ""; for (const line of lines) { const event = parseSseLine(line); if (event) { for (const item of event) { if (item.type === "done") { if (done) continue; done = true; } yield item; } } } }
+    for await (const chunk of sniffed.chunks) { pending += chunk; const lines = pending.split(/\r?\n/); pending = lines.pop() ?? ""; for (const line of lines) { const event = parseSseLine(line); if (event) { for (const item of event) { if (item.type === "done") { if (done) continue; done = true; } yield item; } } } }
     if (pending) { const event = parseSseLine(pending); if (event) for (const item of event) { if (item.type === "done") { if (done) continue; done = true; } yield item; } }
     if (!done) yield { type: "done" };
   }
@@ -39,6 +46,15 @@ export class OpenAIResponsesModel implements ModelClient {
     const headers: Record<string, string> = { "content-type": "application/json", ...(stream ? { accept: "text/event-stream" } : {}) }; if (this.apiKey) headers.authorization = `Bearer ${this.apiKey}`;
     return { method: "POST", redirect: "error", headers, body: JSON.stringify(payload) };
   }
+}
+
+async function sniffStream(source: AsyncIterable<string>): Promise<{ mode: "json"; text: string } | { mode: "sse"; chunks: AsyncIterable<string> }> {
+  const iterator = source[Symbol.asyncIterator](); let buffered = ""; let result = await iterator.next();
+  while (!result.done) { buffered += result.value; const trimmed = buffered.trimStart();
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) { let text = buffered; result = await iterator.next(); while (!result.done) { text += result.value; result = await iterator.next(); } return { mode: "json", text }; }
+    if (/data:/.test(buffered)) return { mode: "sse", chunks: (async function*() { yield buffered; let r = await iterator.next(); while (!r.done) { yield r.value; r = await iterator.next(); } })() };
+    result = await iterator.next(); }
+  return { mode: "json", text: buffered };
 }
 
 function toInput(message: Message): readonly Record<string, unknown>[] {

@@ -86,8 +86,8 @@ export class FetchHttpTransport implements HttpTransport {
       const response = await this.fetch(request.url, { ...request.init, signal: controller.signal });
       const requestId = findRequestId(response.headers);
       if (!response.ok) {
-        await discardBody(response);
-        throw httpError(response.status, response.headers, requestId);
+        const protocolError = await readProtocolError(response);
+        throw httpError(response.status, response.headers, requestId, protocolError);
       }
       return {
         status: response.status,
@@ -135,8 +135,8 @@ export class FetchHttpTransport implements HttpTransport {
       const response = await this.fetch(request.url, { ...request.init, signal: controller.signal });
       const requestId = findRequestId(response.headers);
       if (!response.ok) {
-        await discardBody(response);
-        throw httpError(response.status, response.headers, requestId);
+        const protocolError = await readProtocolError(response);
+        throw httpError(response.status, response.headers, requestId, protocolError);
       }
       const body = response.body;
       const cleanup = () => {
@@ -171,7 +171,7 @@ export class FetchHttpTransport implements HttpTransport {
     try {
       const response = await this.fetch(request.url, { ...request.init, signal: controller.signal });
       const requestId = findRequestId(response.headers);
-      if (!response.ok) { await discardBody(response); throw httpError(response.status, response.headers, requestId); }
+      if (!response.ok) { const protocolError = await readProtocolError(response); throw httpError(response.status, response.headers, requestId, protocolError); }
       if (!response.body) return;
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -242,13 +242,39 @@ async function discardBody(response: Response): Promise<void> {
   }
 }
 
-function httpError(status: number, headers: Headers, requestId?: string): ModelTransportError {
+interface ProtocolErrorFields { readonly rpcErrorCode?: number; readonly supportedProtocolVersions?: readonly string[]; }
+
+async function readProtocolError(response: Response): Promise<ProtocolErrorFields> {
+  // 错误正文不可信，只白名单提取小型 JSON 的协议字段，超限时取消读取。
+  const limit = 8192;
+  if (Number(response.headers.get("content-length")) > limit) { await discardBody(response); return {}; }
+  if (!response.body) return {};
+  const reader = response.body.getReader(); const chunks: Uint8Array[] = []; let size = 0;
+  try {
+    for (;;) { const part = await reader.read(); if (part.done) break; size += part.value.byteLength;
+      if (size > limit) { await reader.cancel(); return {}; } chunks.push(part.value); }
+  } catch { return {}; } finally { reader.releaseLock(); }
+  try {
+    const parsed: unknown = JSON.parse(new TextDecoder().decode(concatBytes(chunks, size)));
+    if (!parsed || typeof parsed !== "object" || !("error" in parsed)) return {};
+    const error = (parsed as { error: unknown }).error;
+    if (!error || typeof error !== "object") return {};
+    const fields = error as { code?: unknown; data?: unknown };
+    if (fields.code !== -32022 || !fields.data || typeof fields.data !== "object") return {};
+    const supported = (fields.data as { supported?: unknown }).supported;
+    if (!Array.isArray(supported) || supported.length > 16 || !supported.every((v) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v))) return {};
+    return { rpcErrorCode: -32022, supportedProtocolVersions: supported };
+  } catch { return {}; }
+}
+
+function httpError(status: number, headers: Headers, requestId?: string, protocolError: ProtocolErrorFields = {}): ModelTransportError {
   const code = httpErrorCode(status);
   return new ModelTransportError(code, `Model request failed with HTTP status ${status}`, {
     status,
     retryAfterMs: code === "rate_limited" ? parseRetryAfter(headers.get("retry-after")) : undefined,
     requestId,
     resourceMetadataUrl: parseResourceMetadataUrl(headers.get("www-authenticate")),
+    ...protocolError,
   });
 }
 
