@@ -13,13 +13,9 @@ async function fixture(options: FixtureOptions = {}) {
     for await (const chunk of request) chunks.push(Buffer.from(chunk));
     const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
     seen.push({ method: body.method, headers: request.headers, body });
+    if (body.method === "server/discover") { response.writeHead(404); response.end(); return; }
     if (options.token && request.headers.authorization !== `Bearer ${options.token}`) { response.writeHead(401); response.end(); return; }
-    if (body.method === "initialize" && body.params.protocolVersion !== (options.protocol ?? "2026-07-28")) {
-      response.writeHead(400, { "content-type": "application/json" });
-      response.end(JSON.stringify({ jsonrpc: "2.0", id: body.id, error: { code: -32602, message: "unsupported version" } }));
-      return;
-    }
-    const result = body.method === "initialize" ? { protocolVersion: options.protocol ?? "2026-07-28", capabilities: { tools: {}, resources: {}, prompts: {} }, serverInfo: { name: "fixture", version: "1" } }
+    const result = body.method === "initialize" ? { protocolVersion: options.protocol ?? "2025-11-25", capabilities: { tools: {}, resources: {}, prompts: {} }, serverInfo: { name: "fixture", version: "1" } }
       : body.method === "tools/list" ? { tools: [{ name: "echo", description: "Echo", inputSchema: { type: "object", properties: { value: { type: "string" } }, required: ["value"], additionalProperties: false } }] }
       : body.method === "tools/call" ? { content: [{ type: "text", text: body.params.arguments.value }], isError: false }
       : body.method === "resources/list" ? { resources: [{ uri: "memo://one", name: "one", mimeType: "text/plain" }] }
@@ -46,7 +42,7 @@ test("remote MCP speaks Streamable HTTP, keeps session, and adapts tools/resourc
     assert.equal((await client.callTool("echo", { value: "ok" })).content[0] && ((await client.callTool("echo", { value: "ok" })).content[0] as any).text, "ok");
     assert.equal((await client.readResource("memo://one")).contents.length, 1);
     assert.equal((await client.getPrompt("hello")).messages.length, 1);
-    assert.ok(server.seen.slice(1).every((item) => item.headers["mcp-session-id"] === "fixture-session"));
+    assert.ok(server.seen.filter((item) => item.method !== "server/discover" && item.method !== "notifications/initialized").slice(1).every((item) => item.headers["mcp-session-id"] === "fixture-session"));
     const tools = await createMcpAgentTools(client, { includeResources: true, includePrompts: true });
     assert.deepEqual(tools.map((tool) => tool.name), ["mcp_remote_echo", "mcp_remote_list_resources", "mcp_remote_read_resource", "mcp_remote_list_prompts", "mcp_remote_get_prompt"]);
     await client.close();
@@ -59,7 +55,7 @@ test("remote MCP falls back to an older protocol version", async () => {
     const client = new McpRemoteClient({ id: "legacy", endpoint: server.endpoint, allowInsecureLocalhost: true, remoteCapabilities: ["read"] });
     await client.connect();
     assert.equal(client.protocol, "2025-03-26");
-    assert.deepEqual(server.seen.slice(0, 2).map((entry) => entry.body.params.protocolVersion), ["2026-07-28", "2025-03-26"]);
+    assert.deepEqual(server.seen.filter((entry) => entry.method === "initialize").map((entry) => entry.body.params.protocolVersion), ["2025-11-25"]);
   } finally { await server.close(); }
 });
 
@@ -79,6 +75,7 @@ test("remote MCP fails closed for unknown response ids and repeated cursors", as
   const server = http.createServer(async (request, response) => {
     const chunks: Buffer[] = []; for await (const chunk of request) chunks.push(Buffer.from(chunk));
     const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    if (body.method === "server/discover") { response.writeHead(404); response.end(); return; }
     if (body.method === "initialize") {
       response.setHeader("content-type", "application/json");
       response.end(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { protocolVersion: "2026-07-28", capabilities: { tools: {} }, serverInfo: { name: "fixture", version: "1" } } })); return;
@@ -108,4 +105,48 @@ test("remote MCP adapter only exposes surfaces declared by the client", async ()
     const tools = await createMcpAgentTools(restricted, { includeResources: true, includePrompts: true });
     assert.deepEqual(tools.map((tool: any) => tool.name), ["mcp_tools-only_echo"]);
   } finally { await server.close(); }
+});
+test("modern MCP discovers without a session and includes per-request metadata", async () => {
+  const seen: Array<{ method: string; params: any; headers: http.IncomingHttpHeaders }> = [];
+  const server = http.createServer(async (request, response) => {
+    const chunks: Buffer[] = []; for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    seen.push({ method: body.method, params: body.params, headers: request.headers });
+    const result = body.method === "server/discover"
+      ? { resultType: "complete", supportedVersions: ["2026-07-28"], capabilities: { tools: {} }, _meta: { serverInfo: { name: "modern", version: "1" } } }
+      : { tools: [{ name: "echo", inputSchema: { type: "object" } }] };
+    response.writeHead(200, { "content-type": "application/json", "mcp-session-id": "ignored" });
+    response.end(JSON.stringify({ jsonrpc: "2.0", id: body.id, result }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address(); if (!address || typeof address === "string") throw new Error("fixture address unavailable");
+  try {
+    const client = new McpRemoteClient({ id: "modern", endpoint: `http://127.0.0.1:${address.port}/mcp`, allowInsecureLocalhost: true, remoteCapabilities: ["read"] });
+    assert.equal((await client.listTools())[0]?.name, "echo");
+    assert.deepEqual(seen.map((item) => item.method), ["server/discover", "tools/list"]);
+    assert.ok(seen.every((item) => item.params._meta.protocolVersion === "2026-07-28" && item.headers["mcp-method"] === item.method && !item.headers["mcp-session-id"] && !item.headers["last-event-id"]));
+  } finally { await new Promise<void>((resolve) => server.close(() => resolve())); }
+});
+
+test("modern MCP retries a structured version rejection without legacy initialize", async () => {
+  const methods: string[] = []; const versions: string[] = [];
+  const server = http.createServer(async (request, response) => {
+    const chunks: Buffer[] = []; for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    methods.push(body.method); versions.push(body.params._meta.protocolVersion);
+    if (body.params._meta.protocolVersion !== "2025-11-25") {
+      response.writeHead(400, { "content-type": "application/json" });
+      response.end(JSON.stringify({ jsonrpc: "2.0", id: body.id, error: { code: -32022, message: "secret", data: { supported: ["2025-11-25"], requested: "2026-07-28", token: "secret" } } })); return;
+    }
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { supportedVersions: ["2025-11-25"], capabilities: { tools: {} } } }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address(); if (!address || typeof address === "string") throw new Error("fixture address unavailable");
+  try {
+    const client = new McpRemoteClient({ id: "modern-version", endpoint: `http://127.0.0.1:${address.port}/mcp`, allowInsecureLocalhost: true, remoteCapabilities: ["read"] });
+    await client.connect(); assert.equal(client.protocol, "2025-11-25");
+    assert.deepEqual(methods, ["server/discover", "server/discover"]);
+    assert.deepEqual(versions, ["2026-07-28", "2025-11-25"]);
+  } finally { await new Promise<void>((resolve) => server.close(() => resolve())); }
 });
