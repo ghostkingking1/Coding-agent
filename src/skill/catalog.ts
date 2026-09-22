@@ -2,8 +2,9 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import matter from "gray-matter";
+import { parse as parseYaml } from "yaml";
 import { z } from "zod";
-import type { JsonObject, JsonSchema, ToolCapability } from "../agent/types.ts";
 import { WorkspacePolicy } from "../tools/security.ts";
 import type { LoadedSkill, SkillCatalogLike, SkillDescriptor, SkillMatch, SkillManifest, SkillResource, SkillSource, SkillCatalogOptions } from "./types.ts";
 
@@ -151,38 +152,33 @@ export class SkillCatalog implements SkillCatalogLike {
 
 function parseSkillDocument(raw: string): { frontmatter: Record<string, unknown>; content: string; diagnostics: string[] } {
   const diagnostics: string[] = [];
-  if (!raw.startsWith("---\n") && !raw.startsWith("---\r\n")) return { frontmatter: {}, content: raw, diagnostics: ["SKILL.md must start with YAML frontmatter"] };
-  const lines = raw.replace(/\r\n/g, "\n").split("\n");
-  const end = lines.indexOf("---", 1);
-  if (end < 0) return { frontmatter: {}, content: raw, diagnostics: ["YAML frontmatter is not terminated"] };
-  const frontmatter: Record<string, unknown> = {};
-  let currentArray: string | undefined;
-  for (const line of lines.slice(1, end)) {
-    if (!line.trim() || line.trim().startsWith("#")) continue;
-    const item = /^\s*-\s+(.+)$/.exec(line);
-    if (item && currentArray) { (frontmatter[currentArray] as string[]).push(item[1].trim().replace(/^['\"]|['\"]$/g, "")); continue; }
-    const pair = /^([A-Za-z][A-Za-z0-9_-]*)\s*:\s*(.*)$/.exec(line);
-    if (!pair) { diagnostics.push(`invalid frontmatter line: ${line.slice(0, 120)}`); continue; }
-    const [, key, value] = pair;
-    if (!value) { frontmatter[key] = []; currentArray = key; continue; }
-    currentArray = undefined;
-    try { frontmatter[key] = parseScalar(value); } catch (error) { diagnostics.push(error instanceof Error ? error.message : String(error)); }
-  }
-  return { frontmatter, content: lines.slice(end + 1).join("\n").replace(/^\n/, ""), diagnostics };
-}
+  const normalized = raw.replace(/\r\n/g, "\n");
+  if (!normalized.startsWith("---\n")) return { frontmatter: {}, content: raw, diagnostics: ["SKILL.md must start with YAML frontmatter"] };
 
-function parseScalar(value: string): string | boolean | number | null | string[] | JsonObject {
-  const text = value.trim();
-  if (text === "[]") return [];
-  if (text === "{}") return {};
-  if (text === "true") return true;
-  if (text === "false") return false;
-  if (text === "null") return null;
-  if (/^-?\d+(\.\d+)?$/.test(text)) return Number(text);
-  if ((text.startsWith("[") && text.endsWith("]")) || (text.startsWith("{") && text.endsWith("}"))) {
-    try { return JSON.parse(text) as string[] | JsonObject; } catch { throw new Error(`invalid JSON-like frontmatter value: ${text.slice(0, 100)}`); }
+  // 先保留明确的终止检查，避免 gray-matter 将未闭合正文误当成 YAML 内容。
+  const lines = normalized.split("\n");
+  if (lines.findIndex((line, index) => index > 0 && line === "---") < 0) {
+    return { frontmatter: {}, content: raw, diagnostics: ["YAML frontmatter is not terminated"] };
   }
-  return text.replace(/^['"]|['"]$/g, "");
+
+  try {
+    const parsed = matter(raw, {
+      engines: {
+        yaml: {
+          parse: (value: string): object => {
+            const result = parseYaml(value);
+            if (!result || typeof result !== "object" || Array.isArray(result)) throw new Error("frontmatter must be a YAML mapping");
+            return result as Record<string, unknown>;
+          },
+        },
+      },
+    });
+    return { frontmatter: parsed.data as Record<string, unknown>, content: parsed.content, diagnostics };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    diagnostics.push(`invalid YAML frontmatter: ${message}`);
+    return { frontmatter: {}, content: raw, diagnostics };
+  }
 }
 
 function scoreSkill(skill: SkillDescriptor, tokens: readonly string[]): SkillMatch {
