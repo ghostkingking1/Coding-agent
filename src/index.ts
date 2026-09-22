@@ -1,5 +1,6 @@
 export { Agent } from "./agent/agent.ts";
 export { TaskStateMachine } from "./agent/task-state-machine.ts";
+export { WorkModeController, PlanStore, createPlanTool, approvalKey, planScopeViolation, PlanIntegrityError, PlanScopeViolationError } from "./agent/work-modes.ts";
 export { DefaultContextManager, createDeterministicContextManager } from "./agent/context-manager.ts";
 export { ToolOutputStore } from "./agent/tool-output-store.ts";
 export { Session } from "./agent/session.ts";
@@ -81,6 +82,8 @@ export type {
   CheckpointSink,
 } from "./agent/types.ts";
 export type { RunDiff, RunDiffFile } from "./agent/run-diff.ts";
+export type { ExecutionMode, AccessMode, ApprovalDecision, WorkModeState, PlanStatus, PlanDocument, PlanScope, PlanCommandScope } from "./agent/work-modes.ts";
+export { PlanTaskStateMachine } from "./agent/work-modes.ts";
 export type { RollbackOptions, RollbackResult, WorkspaceCheckpoint, WorkspaceCheckpointFile, WorkspaceCheckpointManagerOptions } from "./agent/workspace-checkpoint.ts";
 export type { FailedRun, RunResult, RunStatus, SessionResult, SessionRun, SessionStatus, SessionOptions } from "./agent/session.ts";
 export type { CompleteRunInput, PersistedRunStatus, PersistedSessionStatus, SessionRecord, SessionStore, StoredMessage, StoredRunRecord } from "./agent/session-store.ts";
@@ -94,6 +97,7 @@ export type { ModelRuntimeConfig, ModelRuntimeOptions, OpenAICompatibleRuntimeCo
 export type { ModelRouteDecision, ModelRouterOptions } from "./model/model-router.ts";
 export type { PatchChange, PatchFileResult, PatchInput, PatchPreview, PatchResult } from "./tools/patch-tools.ts";
 export type { RunCommandInput, RunCommandPreview, RunCommandResult, RunCommandToolOptions } from "./tools/command-tools.ts";
+export { ModeSwitchingSandboxBackend } from "./tools/sandbox.ts";
 export type { ExecutionRequest, ExecutionNetworkPolicy, ExecutionNetworkPolicyInput, SandboxBackend, SandboxCapabilities, SandboxCapability, SandboxSpawnRequest } from "./tools/sandbox.ts";
 export { ControlledNetworkProxy } from "./tools/network-proxy.ts";
 export { createManagedNetworkCommandTool } from "./tools/network-command.ts";

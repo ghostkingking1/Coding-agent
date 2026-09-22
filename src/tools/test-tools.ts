@@ -98,11 +98,11 @@ export function createRunTestsTool(policy: WorkspacePolicy, options: RunTestsToo
     inputSchema: runTestsInputSchema,
     modelInputSchema: createRunTestsModelInputSchema(defaultScript, options.maxTimeoutMs ?? DEFAULT_MAX_COMMAND_TIMEOUT_MS, allowedScripts, allowAdditionalArgs),
     async preview(input, context) {
-      await assertTrustedScript(policy, input);
+      await assertTrustedScript(policy, input, resolveHostAccess(options));
       return buildRunTestsPreview(await previewCommand(commandTool, input, context), input);
     },
     async prepare(input, context) {
-      await assertTrustedScript(policy, input);
+      await assertTrustedScript(policy, input, resolveHostAccess(options));
       if (!commandTool.prepare) throw new Error("run_command prepare is required");
       const commandOperation = await commandTool.prepare(toRunCommandInput(input), context);
       return {
@@ -119,7 +119,7 @@ export function createRunTestsTool(policy: WorkspacePolicy, options: RunTestsToo
       return buildRunTestsResult(result, prepared.input, allowedOutputPatterns);
     },
     async execute(input, context) {
-      await assertTrustedScript(policy, input);
+      await assertTrustedScript(policy, input, resolveHostAccess(options));
       const result = await commandTool.execute(toRunCommandInput(input), context) as RunCommandResult;
       return buildRunTestsResult(result, input, allowedOutputPatterns);
     },
@@ -212,8 +212,8 @@ function parseTestCount(output: string): number | undefined {
   return match ? Number(match[1]) : undefined;
 }
 
-async function assertTrustedScript(policy: WorkspacePolicy, input: ParsedRunTestsInput): Promise<void> {
-  const cwd = policy.resolveDirectory(input.cwd ?? ".");
+async function assertTrustedScript(policy: WorkspacePolicy, input: ParsedRunTestsInput, hostAccess = false): Promise<void> {
+  const cwd = hostAccess ? policy.resolveHostDirectory(input.cwd ?? ".") : policy.resolveDirectory(input.cwd ?? ".");
   const packagePath = path.join(cwd, "package.json");
   let document: unknown;
   try {
@@ -227,6 +227,10 @@ async function assertTrustedScript(policy: WorkspacePolicy, input: ParsedRunTest
   if (!scripts || typeof scripts !== "object" || Array.isArray(scripts) || typeof (scripts as Record<string, unknown>)[input.script] !== "string") {
     throw new Error(`Trusted npm script is not declared: ${input.script}`);
   }
+}
+
+function resolveHostAccess(options: RunTestsToolOptions): boolean {
+  return typeof options.hostAccess === "function" ? options.hostAccess() : options.hostAccess === true;
 }
 
 function testStatus(result: RunCommandResult): RunTestsResult["status"] {

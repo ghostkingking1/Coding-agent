@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { ApprovalRequest, Tool, ToolContext, ToolExecutionPolicy } from "../agent/types.ts";
+import { approvalKey, planScopeViolation, PlanScopeViolationError, type WorkModeController } from "../agent/work-modes.ts";
 
 /** 工作区路径和资源限制的配置。 */
 export interface WorkspacePolicyOptions {
@@ -12,6 +13,8 @@ export interface WorkspacePolicyOptions {
   readonly maxFileBytes?: number;
   /** 目录遍历或搜索最多返回的条目数。 */
   readonly maxEntries?: number;
+  /** 由工作模式动态开启的宿主机访问；默认关闭，避免 full 语义渗入普通模式。 */
+  readonly workMode?: Pick<WorkModeController, "accessMode">;
 }
 
 /** 工作区安全边界校验失败时抛出的错误。 */
@@ -29,6 +32,7 @@ export class WorkspacePolicy {
   readonly allowHidden: boolean;
   readonly maxFileBytes: number;
   readonly maxEntries: number;
+  readonly workMode?: Pick<WorkModeController, "accessMode">;
 
   /** 创建工作区策略并规范化根目录。 */
   constructor(options: WorkspacePolicyOptions) {
@@ -38,6 +42,7 @@ export class WorkspacePolicy {
     this.allowHidden = options.allowHidden ?? false;
     this.maxFileBytes = options.maxFileBytes ?? 1024 * 1024;
     this.maxEntries = options.maxEntries ?? 5000;
+    this.workMode = options.workMode;
     if (!Number.isInteger(this.maxFileBytes) || this.maxFileBytes < 1) {
       throw new Error("maxFileBytes must be a positive integer");
     }
@@ -64,6 +69,23 @@ export class WorkspacePolicy {
     return candidate;
   }
 
+  /**
+   * 解析 full 模式下的宿主机路径。该入口与受限工作区解析器分开，避免仅靠
+   * prompt 或动态标志绕过边界；调用方必须显式注入 hostAccess 能力。
+   */
+  resolveHostExisting(input: unknown): string {
+    if (typeof input !== "string" || !input.trim()) throw new WorkspaceSecurityError("Path must be a non-empty string");
+    if (input.includes("\0")) throw new WorkspaceSecurityError("Path contains a null byte");
+    let candidate: string;
+    try {
+      const requested = path.isAbsolute(input) ? input : path.resolve(this.root, input);
+      candidate = fs.realpathSync.native(requested);
+    } catch {
+      throw new WorkspaceSecurityError("Path does not exist or cannot be resolved");
+    }
+    return candidate;
+  }
+
   /** 在允许隐藏目录的受控子树内解析路径，供 Skill 等受控元数据使用。 */
   resolveControlledExisting(input: unknown, controlledRoot: string): string {
     if (typeof input !== "string" || !input.trim()) throw new WorkspaceSecurityError("Path must be a non-empty string");
@@ -85,6 +107,14 @@ export class WorkspacePolicy {
     return root;
   }
   /** 解析受大小限制的普通文件。 */
+  resolveHostFile(input: unknown): { path: string; size: number } {
+    const resolved = this.resolveHostExisting(input);
+    const stat = fs.statSync(resolved);
+    if (!stat.isFile()) throw new WorkspaceSecurityError("Expected a regular file");
+    if (stat.size > this.maxFileBytes) throw new WorkspaceSecurityError(`File exceeds the ${this.maxFileBytes}-byte limit`);
+    return { path: resolved, size: stat.size };
+  }
+
   resolveFile(input: unknown): { path: string; size: number } {
     const resolved = this.resolveExisting(input);
     const stat = fs.statSync(resolved);
@@ -102,7 +132,13 @@ export class WorkspacePolicy {
     return resolved;
   }
 
-  /** 返回规范化路径相对于工作区根目录的表示。 */
+  resolveHostDirectory(input: unknown = "."): string {
+    const resolved = this.resolveHostExisting(input);
+    if (!fs.statSync(resolved).isDirectory()) throw new WorkspaceSecurityError("Expected a directory");
+    return resolved;
+  }
+
+  /** 返回规范化路径相对于工作区根目录的表示；宿主机外路径保留可识别的相对形式。 */
   relative(resolved: string): string {
     return path.relative(this.root, resolved) || ".";
   }
@@ -127,22 +163,24 @@ export class WorkspacePolicy {
 }
 
 /** 在工具执行前决定是否允许其请求的审批策略。 */
+export type ApprovalDecision = "once" | "session" | "deny";
+
 export interface ApprovalPolicy {
-  /** 请求用户或上层策略批准一次工具操作。 */
-  requestApproval(request: ApprovalRequest): Promise<boolean> | boolean;
+  /** 请求用户或上层策略批准一次工具操作。兼容旧 boolean 回调。 */
+  requestApproval(request: ApprovalRequest): Promise<boolean | ApprovalDecision> | boolean | ApprovalDecision;
 }
 
 /** 默认只自动允许只读工具，其余能力默认拒绝。 */
 export class DefaultApprovalPolicy implements ApprovalPolicy {
-  private readonly confirm?: (request: ApprovalRequest) => Promise<boolean> | boolean;
+  private readonly confirm?: (request: ApprovalRequest) => Promise<boolean | ApprovalDecision> | boolean | ApprovalDecision;
 
   /** 创建一个可选的交互式确认回调。 */
-  constructor(confirm?: (request: ApprovalRequest) => Promise<boolean> | boolean) {
+  constructor(confirm?: (request: ApprovalRequest) => Promise<boolean | ApprovalDecision> | boolean | ApprovalDecision) {
     this.confirm = confirm;
   }
 
   /** 根据工具能力决定是否自动通过或交给确认回调。 */
-  requestApproval(request: ApprovalRequest): Promise<boolean> | boolean {
+  requestApproval(request: ApprovalRequest): Promise<boolean | ApprovalDecision> | boolean | ApprovalDecision {
     if (request.capabilities.length > 0 && request.capabilities.every((capability) => capability === "read")) return true;
     return this.confirm?.(request) ?? false;
   }
@@ -165,6 +203,11 @@ export interface SecurityPolicyOptions {
   readonly requireManifest?: boolean;
   /** 发起审批请求时调用的观察器。 */
   readonly onApprovalRequired?: (request: ApprovalRequest) => void | Promise<void>;
+  /** 由 REPL 控制的工作模式；未提供时保持既有审批行为。 */
+  readonly workMode?: WorkModeController;
+  /** 计划越界时先持久化 needs-plan-update，再把错误返回给模型。 */
+  readonly onPlanScopeViolation?: (taskId: string, reason: string) => void | Promise<void>;
+  readonly workspaceRoot?: string;
 }
 
 /** 在工具注册表执行工具前执行能力和审批检查。 */
@@ -172,12 +215,14 @@ export class SecurityPolicy implements ToolExecutionPolicy {
   private readonly approval: ApprovalPolicy;
   private readonly requireManifest: boolean;
   private readonly options: SecurityPolicyOptions;
+  private readonly workMode?: WorkModeController;
 
   /** 创建安全策略，默认要求工具声明 manifest 且拒绝未批准的副作用。 */
   constructor(options: SecurityPolicyOptions = {}) {
     this.options = options;
     this.approval = options.approval ?? new DefaultApprovalPolicy();
     this.requireManifest = options.requireManifest ?? true;
+    this.workMode = options.workMode;
   }
 
   /** 在副作用发生前验证 manifest、生成预览并完成审批。 */
@@ -188,6 +233,18 @@ export class SecurityPolicy implements ToolExecutionPolicy {
       return;
     }
     if (manifest.capabilities.length > 0 && manifest.capabilities.every((capability) => capability === "read")) return;
+    // 计划模式只允许专用 write_plan 写入计划文件，禁止其它副作用工具。
+    if (this.workMode?.executionMode === "plan" && tool.name !== "write_plan") throw new ApprovalDeniedError(tool.name);
+    const activePlan = this.workMode?.activePlan;
+    if (this.workMode?.executionMode === "execute" && activePlan) {
+      const violation = planScopeViolation(activePlan, tool, input, this.options.workspaceRoot ?? process.cwd());
+      if (violation) {
+        await this.options.onPlanScopeViolation?.(activePlan.taskId, violation);
+        throw new PlanScopeViolationError(activePlan.taskId, violation);
+      }
+    }
+    const operationKey = approvalKey(tool.name, input, _context.preparedOperation?.approvalDigest);
+    if (this.workMode?.accessMode === "full" || this.workMode?.hasGrant(operationKey)) return;
     /** 在请求审批前生成预览，让审批方看到即将发生的精确变更。 */
     const preview = _context.preparedOperation?.preview ?? (tool.preview ? await tool.preview(input, _context) : undefined);
     const request: ApprovalRequest = {
@@ -199,6 +256,8 @@ export class SecurityPolicy implements ToolExecutionPolicy {
     };
     /** 必须先完成授权，注册表才会调用工具并触发副作用。 */
     await this.options.onApprovalRequired?.(request);
-    if (!(await this.approval.requestApproval(request))) throw new ApprovalDeniedError(tool.name);
+    const decision = await this.approval.requestApproval(request);
+    if (decision === "session") this.workMode?.grant(operationKey);
+    if (decision !== true && decision !== "once" && decision !== "session") throw new ApprovalDeniedError(tool.name);
   }
 }

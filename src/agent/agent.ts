@@ -126,7 +126,7 @@ export class Agent {
         const context = await this.contextManager.compact(modelMessages, this.options.contextBudget ?? DEFAULT_CONTEXT_BUDGET);
         const request = {
           messages: context.messages,
-          tools: this.tools.listModelDefinitions(),
+          tools: this.tools.listModelDefinitions(this.options.modelToolFilter),
           signal: this.options.signal,
           contextResult: context,
           ...((runOptions.auditSink ?? this.options.auditSink) ? { routingAudit: { sink: (runOptions.auditSink ?? this.options.auditSink)!, sessionId: runOptions.sessionId, runId: runOptions.runId } } : {}),

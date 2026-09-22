@@ -368,6 +368,8 @@ export interface AgentOptions {
   auditSink?: AuditSink;
   /** 启用 coding 任务的写入后验证门禁；默认关闭以保持通用 Agent 兼容性。 */
   verification?: VerificationPolicy;
+  /** 按当前会话工作模式过滤模型可见工具；执行侧仍由 ToolRegistry 负责最终门禁。 */
+  modelToolFilter?: (tool: Tool) => boolean;
 }
 
 /** 单次 Agent run 可由 Session 注入的上下文和标识。 */

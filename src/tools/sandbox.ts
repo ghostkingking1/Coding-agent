@@ -24,11 +24,13 @@ export type SandboxCapability =
   | "network.loopback"
   | "network.proxy"
   | "network.allowlist"
+  | "network.full"
   | "filesystem.workspace_write";
 
 /** Helper 可独立验证的网络请求；数组在进入摘要和 Helper 前必须规范化。 */
 export type ExecutionNetworkPolicy =
   | { readonly mode: "off" }
+  | { readonly mode: "full" }
   | { readonly mode: "loopback"; readonly ports: readonly number[] }
   | {
       readonly mode: "allowlist";
@@ -87,15 +89,28 @@ export class SandboxUnavailableError extends Error {
 }
 
 /**
- * 仅提供进程树管理，不宣称网络、文件系统或资源隔离能力。
- * 生产调用方必须注入具备真实隔离能力的后端。
+ * 仅提供进程树管理，不宣称文件系统或资源隔离能力。显式 full 模式可声明
+ * network.full，含义是“不限制宿主网络”，不是该后端提供了网络隔离。
  */
+export interface ProcessSandboxBackendOptions {
+  /** 仅由显式 full 模式注入；普通宿主后端不得宣称可提供任意网络。 */
+  readonly allowFullNetwork?: boolean;
+}
+
 export class ProcessSandboxBackend implements SandboxBackend {
-  readonly capabilities: SandboxCapabilities = {
-    backend: "process",
-    version: "0",
-    capabilities: ["process.spawn", "process-tree"],
-  };
+  readonly capabilities: SandboxCapabilities;
+
+  constructor(options: ProcessSandboxBackendOptions = {}) {
+    this.capabilities = {
+      backend: "process",
+      version: "0",
+      capabilities: [
+        "process.spawn",
+        "process-tree",
+        ...(options.allowFullNetwork ? ["network.full" as const] : []),
+      ],
+    };
+  }
 
   assertAvailable(required: readonly SandboxCapability[]): void {
     const missing = required.filter((capability) => !this.capabilities.capabilities.includes(capability));
@@ -118,6 +133,25 @@ export class ProcessSandboxBackend implements SandboxBackend {
 }
 
 /** Rust Helper 未配置或握手失败时使用，保证系统 fail closed。 */
+/** 根据当前工作模式切换受限 Helper 与宿主进程后端；切换由 CLI 状态控制，不由模型输入决定。 */
+export class ModeSwitchingSandboxBackend implements SandboxBackend {
+  private readonly selectBackend: () => SandboxBackend;
+
+  constructor(selectBackend: () => SandboxBackend) {
+    this.selectBackend = selectBackend;
+  }
+
+  get capabilities(): SandboxCapabilities { return this.selectBackend().capabilities; }
+
+  assertAvailable(required: readonly SandboxCapability[]): void {
+    this.selectBackend().assertAvailable(required);
+  }
+
+  spawn(request: SandboxSpawnRequest): ChildProcess {
+    return this.selectBackend().spawn(request);
+  }
+}
+
 export class UnavailableSandboxBackend implements SandboxBackend {
   readonly capabilities: SandboxCapabilities = { backend: "unavailable", version: "0", capabilities: [] };
 
@@ -201,6 +235,7 @@ export function normalizeNetworkPolicy(policy: ExecutionNetworkPolicyInput): Exe
 export function networkCapability(policy: ExecutionNetworkPolicyInput): SandboxCapability {
   policy = normalizeNetworkPolicy(policy);
   if (policy.mode === "off") return "network.off";
+  if (policy.mode === "full") return "network.full";
   if (policy.mode === "loopback") return "network.loopback";
   return "network.allowlist";
 }
@@ -208,7 +243,7 @@ export function networkCapability(policy: ExecutionNetworkPolicyInput): SandboxC
 /** 审批摘要与 Helper 必须看到完全相同的排序结果，避免集合顺序造成策略歧义。 */
 export function canonicalNetworkPolicy(input: ExecutionNetworkPolicyInput): ExecutionNetworkPolicy {
   const policy = normalizeNetworkPolicy(input);
-  if (policy.mode === "off") return policy;
+  if (policy.mode === "off" || policy.mode === "full") return policy;
   const ports = [...new Set(policy.ports)].sort((a, b) => a - b);
   if (policy.mode === "loopback") return { mode: "loopback", ports };
   return {

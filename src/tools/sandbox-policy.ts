@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { canonicalNetworkPolicy, networkCapability, type ExecutionNetworkPolicy, type ExecutionRequest, type SandboxCapability } from "./sandbox.ts";
 
-/** V3 网络策略；当前命令工具默认只允许 off，其他模式必须由后端真实声明。 */
+/** 网络策略；full 只由显式 full 工作模式注入，普通模式仍保持 fail-closed。 */
 export type NetworkPolicy = ExecutionNetworkPolicy;
 
 export type RiskClass = "R0" | "R1" | "R2" | "R3" | "R4" | "R5" | "R6";

@@ -142,6 +142,19 @@ test("apply_patch records originals only when execution is approved", async () =
   });
 });
 
+test("full host access patches an absolute file outside the workspace", async () => {
+  await withWorkspace(async (root) => {
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "coding-agent-host-patch-"));
+    try {
+      const file = path.join(outside, "outside.txt");
+      await fs.writeFile(file, "before\n");
+      const patch = createPatchTool(new WorkspacePolicy({ root }), { hostAccess: true });
+      await patch.execute({ changes: [{ path: file, find: "before", replaceWith: "after" }] }, { messages: [] });
+      assert.equal(await fs.readFile(file, "utf8"), "after\n");
+    } finally { await fs.rm(outside, { recursive: true, force: true }); }
+  });
+});
+
 test("apply_patch rejects a file changed while approval is pending", async () => {
   await withWorkspace(async (root) => {
     const file = path.join(root, "app.ts");
