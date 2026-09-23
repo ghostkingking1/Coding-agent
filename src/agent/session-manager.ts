@@ -30,7 +30,7 @@ export class SessionManager {
       throw new Error("Session has an active run; refuse to load it concurrently");
     }
     await this.store.interruptExpiredRuns(sessionId, now, now);
-    const contextCheckpoint = await this.store.getContextCheckpoint(sessionId);
+    const contextCheckpoint = await this.readValidContextCheckpoint(sessionId);
     const { messages, persistedMessageCount } = await this.loadContextMessages(sessionId, contextCheckpoint);
     return Session.restore(this.agent, { record, store: this.store, messages, persistedMessageCount, runs, contextCheckpoint });
   }
@@ -45,12 +45,29 @@ export class SessionManager {
     const run = [...runs].reverse().find((candidate) => candidate.status === "interrupted");
     const checkpoint = run ? await this.store.getCheckpoint(sessionId, run.id) : undefined;
     if (!run || !checkpoint) return this.load(sessionId);
-    const contextCheckpoint = await this.store.getContextCheckpoint(sessionId);
+    const contextCheckpoint = await this.readValidContextCheckpoint(sessionId);
     const { messages, persistedMessageCount } = await this.loadContextMessages(sessionId, contextCheckpoint);
     return Session.restore(this.agent, { record, store: this.store, messages, persistedMessageCount, runs, contextCheckpoint, resumable: { run, checkpoint } });
   }
 
   list(): Promise<readonly SessionRecord[]> { return this.store.listSessions(); }
+  private async readValidContextCheckpoint(sessionId: string): Promise<import("./types.ts").ContextCheckpoint | undefined> {
+    try {
+      const checkpoint = await this.store.getContextCheckpoint(sessionId);
+      if (!checkpoint) return undefined;
+      // 未版本化旧记录无法证明游标对应 Transcript sequence，安全回退到完整归档。
+      if (!checkpoint.resumeMessages || checkpoint.version === undefined || checkpoint.version < 1 ||
+          checkpoint.sourceMessageCount === undefined || checkpoint.coveredThroughSequence !== checkpoint.sourceMessageCount - 1) return undefined;
+      if (checkpoint.summaryVersion !== "summary-v1" || checkpoint.compressionStrategyVersion !== "context-compaction-v1") return undefined;
+      const count = this.store.countMessages ? await this.store.countMessages(sessionId) : undefined;
+      if (count !== undefined && checkpoint.sourceMessageCount > count) return undefined;
+      return checkpoint;
+    } catch {
+      // 损坏或无法解码的 checkpoint 不阻断会话；Transcript 是恢复兜底来源。
+      await this.store.record({ sessionId, eventType: "context_checkpoint_rejected", status: "fallback" });
+      return undefined;
+    }
+  }
   private async loadContextMessages(sessionId: string, checkpoint: import("./types.ts").ContextCheckpoint | undefined): Promise<{ messages: import("./session-store.ts").StoredMessage[]; persistedMessageCount: number }> {
     if (!this.store.countMessages || !this.store.listMessagesFrom) {
       const messages = [...await this.store.listMessages(sessionId)];

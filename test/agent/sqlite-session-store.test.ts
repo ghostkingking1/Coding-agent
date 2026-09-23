@@ -14,7 +14,10 @@ const capabilities = { toolCalling: false, streaming: false } as const;
 
 async function withDatabase(run: (root: string, databasePath: string) => Promise<void>): Promise<void> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "coding-agent-session-db-"));
-  try { await run(root, path.join(root, "sessions.sqlite")); } finally { await removeTemporaryDirectory(root); }
+  let failure: unknown;
+  try { await run(root, path.join(root, "sessions.sqlite")); } catch (error) { failure = error; }
+  try { await removeTemporaryDirectory(root); } catch (error) { if (failure === undefined) throw error; }
+  if (failure !== undefined) throw failure;
 }
 
 /** Windows 释放 SQLite WAL sidecar 句柄存在延迟；重试只属于测试清理，不进入业务代码。 */
@@ -119,10 +122,13 @@ test("SQLite persists the independent context checkpoint", async () => {
   await withDatabase(async (root, databasePath) => {
     const store = new SqliteSessionStore(databasePath);
     await store.createSession({ id: "session-context", workspaceRoot: root, createdAt: "2026-01-01T00:00:00.000Z" });
-    await store.saveContextCheckpoint({ sessionId: "session-context", coveredThroughSequence: 3, sourcePrefixHash: "hash", summarySegments: [{ summaryId: "sum", sourceMessageIndexes: [0, 1], content: "summary" }], retainedTailStart: 4, updatedAt: "2026-01-01T00:01:00.000Z" });
+    await store.saveContextCheckpoint({ sessionId: "session-context", version: 4, parentVersion: 3, summaryVersion: "summary-v1", compressionStrategyVersion: "context-compaction-v1", coveredThroughSequence: 3, sourcePrefixHash: "hash", summarySegments: [{ summaryId: "sum", sourceMessageIndexes: [0, 1], content: "summary" }], retainedTailStart: 4, updatedAt: "2026-01-01T00:01:00.000Z" });
     const checkpoint = await store.getContextCheckpoint("session-context");
     assert.equal(checkpoint?.coveredThroughSequence, 3);
     assert.equal(checkpoint?.summarySegments[0]?.content, "summary");
+    assert.equal(checkpoint?.version, 4);
+    assert.equal(checkpoint?.parentVersion, 3);
+    assert.equal(checkpoint?.compressionStrategyVersion, "context-compaction-v1");
     await store.close();
   });
 });
@@ -191,7 +197,13 @@ test("session recovery loads the persisted compacted view plus only the incremen
     const checkpoint = await firstStore.getContextCheckpoint("session-compact-resume");
     assert.ok(checkpoint?.resumeMessages);
     assert.equal(checkpoint.sourceMessageCount, persistedCount);
+    assert.equal(checkpoint.coveredThroughSequence, persistedCount - 1);
+    assert.ok((checkpoint.version ?? 0) >= 1);
+    assert.equal(checkpoint.summaryVersion, "summary-v1");
     assert.ok(checkpoint.resumeMessages.length < persistedCount);
+    const transcriptBeforeRestart = await firstStore.listMessages("session-compact-resume");
+    assert.ok(transcriptBeforeRestart.some((entry) => entry.message.content.includes("first request first request")));
+    assert.ok(!transcriptBeforeRestart.some((entry) => entry.message.content.includes("persisted old work")));
     await firstStore.close();
 
     let restoredSummaryCalls = 0;
@@ -215,6 +227,11 @@ test("session recovery loads the persisted compacted view plus only the incremen
     assert.equal(restoredSummaryInputs.flat().some((content) => content.includes("first request first request")), false);
     assert.equal(requests[0]?.some((message) => message.includes("first request first request")), false);
     assert.equal(await restoredStore.countMessages("session-compact-resume"), persistedCount + 2);
+    const transcriptAfterRestart = await restoredStore.listMessages("session-compact-resume");
+    assert.ok(transcriptAfterRestart.some((entry) => entry.message.content.includes("first request first request")));
+    const latestCheckpoint = await restoredStore.getContextCheckpoint("session-compact-resume");
+    assert.equal(latestCheckpoint?.coveredThroughSequence, transcriptAfterRestart.length - 1);
+    assert.ok((latestCheckpoint?.version ?? 0) > (checkpoint.version ?? 0));
     assert.ok((await restoredStore.listAuditEvents("session-compact-resume")).some((event) => event.eventType === "context_checkpoint_restored"));
     await restoredStore.close();
   });

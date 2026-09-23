@@ -134,10 +134,15 @@ export class Session {
       const newMessages = result.messages.slice(this.context.length);
       await this.store!.completeRun({ run: { id: pending.run.id, sessionId: this.sessionId, status: "completed", input: pending.run.input, finalText: result.finalText, startedAt: pending.run.startedAt, finishedAt, result }, messages: newMessages.map((message, index) => ({ sessionId: this.sessionId, runId: pending.run.id, sequence: this.persistedMessageCount + index, message, createdAt: finishedAt })) });
       await this.store!.record({ sessionId: this.sessionId, runId: pending.run.id, eventType: "run_completed" });
-      this.context = [...result.messages];
       this.persistedMessageCount += newMessages.length;
+      this.context = [...result.messages];
       const resumedContextCheckpoint = await this.agent.exportContextCheckpoint(this.sessionId, this.context);
-      if (resumedContextCheckpoint) await this.store!.saveContextCheckpoint({ ...resumedContextCheckpoint, sourceMessageCount: this.persistedMessageCount });
+      if (resumedContextCheckpoint) {
+        // Transcript 仍按完整消息追加；后续运行只以 checkpoint 的模型视图为内存基线。
+        const state = { ...resumedContextCheckpoint, coveredThroughSequence: this.persistedMessageCount - 1, sourceMessageCount: this.persistedMessageCount };
+        await this.store!.saveContextCheckpoint(state);
+        if (state.resumeMessages) this.context = [...state.resumeMessages];
+      }
       this.resumable = undefined;
       this.runHistory.push(runResult);
       return runResult;
@@ -185,10 +190,15 @@ export class Session {
         messages: newMessages.map((message, index) => ({ sessionId: this.sessionId, runId, sequence: this.persistedMessageCount + index, message, createdAt: finishedAt })),
       });
       await this.store?.record({ sessionId: this.sessionId, runId, eventType: "run_completed" });
-      this.context = [...result.messages];
       this.persistedMessageCount += newMessages.length;
+      this.context = [...result.messages];
       const contextCheckpoint = await this.agent.exportContextCheckpoint(this.sessionId, this.context);
-      if (contextCheckpoint) await this.store?.saveContextCheckpoint({ ...contextCheckpoint, sourceMessageCount: this.persistedMessageCount });
+      if (contextCheckpoint) {
+        // Checkpoint 游标使用 Transcript 全局序号，不能使用压缩视图内的数组 index。
+        const state = { ...contextCheckpoint, coveredThroughSequence: this.persistedMessageCount - 1, sourceMessageCount: this.persistedMessageCount };
+        await this.store?.saveContextCheckpoint(state);
+        if (state.resumeMessages) this.context = [...state.resumeMessages];
+      }
       this.runHistory.push(runResult);
       return runResult;
     } catch (error) {

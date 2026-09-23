@@ -178,6 +178,12 @@ export interface ContextSummary {
 }
 export interface ContextCheckpoint {
   readonly sessionId: string;
+  /** 每次 ContextState 更新递增；parentVersion 用于诊断连续压缩链。 */
+  readonly version?: number;
+  readonly parentVersion?: number;
+  readonly summaryVersion?: string;
+  readonly compressionStrategyVersion?: string;
+  /** Transcript 的稳定序号游标，而非压缩后内存数组下标。 */
   readonly coveredThroughSequence: number;
   readonly sourcePrefixHash: string;
   readonly summarySegments: readonly ContextSummary[];

@@ -1,6 +1,9 @@
 import crypto from "node:crypto";
 import type { ContextBudget, ContextCheckpoint, ContextDegradation, ContextManager, ContextResult, ContextStageResult, ContextSummary, Message, ModelUsage } from "./types.ts";
 
+const SUMMARY_VERSION = "summary-v1";
+const COMPRESSION_STRATEGY_VERSION = "context-compaction-v1";
+
 export interface ContextManagerOptions {
   readonly messagesForSession?: (sessionId: string) => readonly Message[];
   readonly summarize?: (messages: readonly Message[]) => Promise<string>;
@@ -17,6 +20,7 @@ export class DefaultContextManager implements ContextManager {
   /** 摘要按完整源消息指纹缓存；同一历史前缀在后续请求中绝不重复摘要。 */
   private readonly summaryCache = new Map<string, string>();
   private readonly restoredSegments = new Map<string, readonly ContextSummary[]>();
+  private readonly checkpointVersions = new Map<string, number>();
   constructor(options: ContextManagerOptions = {}) { this.options = options; }
 
   estimate(messages: readonly Message[]): number {
@@ -123,7 +127,7 @@ export class DefaultContextManager implements ContextManager {
   }
 
   private async makeSummary(messages: readonly Message[]): Promise<string> {
-    const key = summaryKey(messages);
+    const key = versionedSummaryKey(messages);
     const cached = this.summaryCache.get(key);
     if (cached !== undefined) return cached;
     let summary: string | undefined;
@@ -143,6 +147,10 @@ export class DefaultContextManager implements ContextManager {
     const segments = [...previous, ...result.summaries].filter((segment, index, all) => all.findIndex((candidate) => candidate.summaryId === segment.summaryId || JSON.stringify(candidate.sourceMessageIndexes) === JSON.stringify(segment.sourceMessageIndexes)) === index);
     const checkpoint: ContextCheckpoint = {
       sessionId,
+      version: (this.checkpointVersions.get(sessionId) ?? 0) + 1,
+      ...(this.checkpointVersions.has(sessionId) ? { parentVersion: this.checkpointVersions.get(sessionId)! } : {}),
+      summaryVersion: SUMMARY_VERSION,
+      compressionStrategyVersion: COMPRESSION_STRATEGY_VERSION,
       coveredThroughSequence,
       sourcePrefixHash: prefixHash(messages, Math.min(coveredThroughSequence, messages.length - 1)),
       summarySegments: segments,
@@ -151,6 +159,7 @@ export class DefaultContextManager implements ContextManager {
       sourceMessageCount: messages.length,
       updatedAt: new Date().toISOString(),
     };
+    this.checkpointVersions.set(sessionId, checkpoint.version!);
     this.restoredSegments.set(sessionId, checkpoint.summarySegments);
     return checkpoint;
   }
@@ -159,23 +168,28 @@ export class DefaultContextManager implements ContextManager {
     if (checkpoint.resumeMessages && checkpoint.sourceMessageCount !== undefined) {
       for (const segment of checkpoint.summarySegments) {
         const source = segment.sourceMessageIndexes.map((index) => messages[index]).filter((message): message is Message => message !== undefined);
-        if (source.length === segment.sourceMessageIndexes.length) this.summaryCache.set(summaryKey(source), segment.content);
+        if (source.length === segment.sourceMessageIndexes.length) this.summaryCache.set(versionedSummaryKey(source), segment.content);
       }
       this.restoredSegments.set(checkpoint.sessionId, checkpoint.summarySegments);
+      this.checkpointVersions.set(checkpoint.sessionId, checkpoint.version ?? 1);
       return true;
     }
     if (checkpoint.coveredThroughSequence >= messages.length || prefixHash(messages, checkpoint.coveredThroughSequence) !== checkpoint.sourcePrefixHash) return false;
     for (const segment of checkpoint.summarySegments) {
       const source = segment.sourceMessageIndexes.map((index) => messages[index]).filter((message): message is Message => message !== undefined);
-      if (source.length === segment.sourceMessageIndexes.length) this.summaryCache.set(summaryKey(source), segment.content);
+      if (source.length === segment.sourceMessageIndexes.length) this.summaryCache.set(versionedSummaryKey(source), segment.content);
     }
     this.restoredSegments.set(checkpoint.sessionId, checkpoint.summarySegments);
+    this.checkpointVersions.set(checkpoint.sessionId, checkpoint.version ?? 1);
     return true;
   }
 }
 
 function summaryKey(messages: readonly Message[]): string {
   return crypto.createHash("sha256").update(JSON.stringify(messages)).digest("hex");
+}
+function versionedSummaryKey(messages: readonly Message[]): string {
+  return `${summaryKey(messages)}:${SUMMARY_VERSION}:${COMPRESSION_STRATEGY_VERSION}`;
 }
 function prefixHash(messages: readonly Message[], sequence: number): string { return crypto.createHash("sha256").update(JSON.stringify(messages.slice(0, sequence + 1))).digest("hex"); }
 
