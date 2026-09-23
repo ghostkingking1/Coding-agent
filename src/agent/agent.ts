@@ -123,7 +123,7 @@ export class Agent {
         const modelMessages: Message[] = verification?.requiresVerification
           ? [...messages, { role: "system", content: "The workspace was modified, but verification has not passed. You must call run_tests before completing this task." }]
           : messages;
-        const context = await this.contextManager.compact(modelMessages, this.options.contextBudget ?? DEFAULT_CONTEXT_BUDGET);
+        const context = await this.contextManager.compact(modelMessages, this.options.contextBudget ?? DEFAULT_CONTEXT_BUDGET, runOptions.summaryCache);
         const request = {
           messages: context.messages,
           tools: this.tools.listModelDefinitions(this.options.modelToolFilter),

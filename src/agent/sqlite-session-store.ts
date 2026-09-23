@@ -1,9 +1,9 @@
 import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
-import type { AuditEvent, CheckpointRecord, ContextCheckpoint, Message } from "./types.ts";
+import type { AuditEvent, CheckpointRecord, ContextCheckpoint, Message, SummaryCacheEntry } from "./types.ts";
 import type { CompleteRunInput, PersistedRunStatus, SessionRecord, SessionStore, StoredMessage, StoredRunRecord } from "./session-store.ts";
 
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 
 /** SQLite 持久化仅保存结构化审计数据；文件 checkpoint 内容继续属于文件系统层。 */
 export class SqliteSessionStore implements SessionStore {
@@ -119,6 +119,20 @@ export class SqliteSessionStore implements SessionStore {
     return row ? { sessionId: row.session_id, coveredThroughSequence: row.covered_through_sequence, sourcePrefixHash: row.source_prefix_hash, summarySegments: JSON.parse(row.summary_segments_json) as ContextCheckpoint["summarySegments"], retainedTailStart: row.retained_tail_start, ...(row.resume_messages_json ? { resumeMessages: JSON.parse(row.resume_messages_json) as Message[] } : {}), ...(row.source_message_count === null ? {} : { sourceMessageCount: row.source_message_count }), ...(row.version === null ? {} : { version: row.version }), ...(row.parent_version === null ? {} : { parentVersion: row.parent_version }), ...(row.summary_version === null ? {} : { summaryVersion: row.summary_version }), ...(row.compression_strategy_version === null ? {} : { compressionStrategyVersion: row.compression_strategy_version }), updatedAt: row.updated_at } : undefined;
   }
 
+  async getSummaryCache(cacheKey: string): Promise<SummaryCacheEntry | undefined> {
+    const row = this.database.prepare("SELECT cache_key, source_hash, summary_version, compression_strategy_version, content, created_at FROM summary_cache WHERE cache_key = ?").get(cacheKey) as SummaryCacheRow | undefined;
+    return row && { cacheKey: row.cache_key, sourceHash: row.source_hash, summaryVersion: row.summary_version, compressionStrategyVersion: row.compression_strategy_version, content: row.content, createdAt: row.created_at };
+  }
+
+  async saveSummaryCache(entry: SummaryCacheEntry): Promise<void> {
+    if (!/^[0-9a-f]{64}:summary-v[0-9]+:context-compaction-v[0-9]+$/.test(entry.cacheKey) || !/^[0-9a-f]{64}$/.test(entry.sourceHash) || entry.content.length > 64_000) throw new Error("Invalid summary cache entry");
+    this.transaction(() => {
+      this.database.prepare("INSERT INTO summary_cache (cache_key, source_hash, summary_version, compression_strategy_version, content, created_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(cache_key) DO UPDATE SET content=excluded.content, created_at=excluded.created_at").run(entry.cacheKey, entry.sourceHash, entry.summaryVersion, entry.compressionStrategyVersion, entry.content, entry.createdAt);
+      // 持久缓存只用于避免重复计算，保留最近 1000 条，避免数据库无限增长。
+      this.database.prepare("DELETE FROM summary_cache WHERE cache_key NOT IN (SELECT cache_key FROM summary_cache ORDER BY created_at DESC LIMIT 1000)").run();
+    });
+  }
+
   async record(event: AuditEvent): Promise<void> {
     const sessionId = event.sessionId ?? "unknown";
     const sequence = event.sequence ?? Number((this.database.prepare("SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence FROM audit_events WHERE session_id = ?").get(sessionId) as { sequence: number }).sequence);
@@ -177,6 +191,10 @@ export class SqliteSessionStore implements SessionStore {
       this.transaction(() => { this.database.exec("ALTER TABLE context_checkpoints ADD COLUMN version INTEGER; ALTER TABLE context_checkpoints ADD COLUMN parent_version INTEGER; ALTER TABLE context_checkpoints ADD COLUMN summary_version TEXT; ALTER TABLE context_checkpoints ADD COLUMN compression_strategy_version TEXT; INSERT INTO schema_migrations(version) VALUES (7);"); });
       current = 7;
     }
+    if (current === 7) {
+      this.transaction(() => { this.database.exec("CREATE TABLE summary_cache (cache_key TEXT PRIMARY KEY, source_hash TEXT NOT NULL, summary_version TEXT NOT NULL, compression_strategy_version TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL); CREATE INDEX summary_cache_created_idx ON summary_cache(created_at DESC);"); this.database.exec("INSERT INTO schema_migrations(version) VALUES (8)"); });
+      current = 8;
+    }
     if (current === SCHEMA_VERSION) return;
     this.transaction(() => {
       this.database.exec(`
@@ -187,6 +205,8 @@ export class SqliteSessionStore implements SessionStore {
         CREATE INDEX messages_session_sequence_idx ON messages(session_id, sequence);
         CREATE TABLE checkpoints (session_id TEXT NOT NULL REFERENCES sessions(id), run_id TEXT PRIMARY KEY REFERENCES runs(id), step INTEGER NOT NULL, phase TEXT NOT NULL CHECK(phase IN ('model', 'tool')), payload_json TEXT NOT NULL, updated_at TEXT NOT NULL);
         CREATE TABLE context_checkpoints (session_id TEXT PRIMARY KEY REFERENCES sessions(id), covered_through_sequence INTEGER NOT NULL, source_prefix_hash TEXT NOT NULL, summary_segments_json TEXT NOT NULL, retained_tail_start INTEGER NOT NULL, resume_messages_json TEXT, source_message_count INTEGER, version INTEGER, parent_version INTEGER, summary_version TEXT, compression_strategy_version TEXT, updated_at TEXT NOT NULL);
+        CREATE TABLE summary_cache (cache_key TEXT PRIMARY KEY, source_hash TEXT NOT NULL, summary_version TEXT NOT NULL, compression_strategy_version TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL);
+        CREATE INDEX summary_cache_created_idx ON summary_cache(created_at DESC);
         CREATE TABLE audit_events (id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, run_id TEXT, sequence INTEGER NOT NULL, event_type TEXT NOT NULL, step INTEGER, tool_call_id TEXT, tool_name TEXT, attempt INTEGER, status TEXT, error_code TEXT, request_id TEXT, metadata_json TEXT, created_at TEXT NOT NULL, UNIQUE(session_id, sequence));
         CREATE INDEX audit_session_run_idx ON audit_events(session_id, run_id, sequence);
         INSERT INTO schema_migrations(version) VALUES (${SCHEMA_VERSION});
@@ -199,6 +219,7 @@ interface SessionRow { id: string; workspace_root: string; status: "active" | "c
 interface RunRow { id: string; session_id: string; status: PersistedRunStatus; input: string; final_text: string | null; error: string | null; started_at: string; finished_at: string | null; result_json: string | null; owner_id: string | null; lease_until: string | null; }
 interface MessageRow { session_id: string; run_id: string | null; sequence: number; role: Message["role"]; content: string; tool_call_id: string | null; tool_name: string | null; tool_calls_json: string | null; created_at: string; }
 interface ContextCheckpointRow { session_id: string; covered_through_sequence: number; source_prefix_hash: string; summary_segments_json: string; retained_tail_start: number; resume_messages_json: string | null; source_message_count: number | null; version: number | null; parent_version: number | null; summary_version: string | null; compression_strategy_version: string | null; updated_at: string; }
+interface SummaryCacheRow { cache_key: string; source_hash: string; summary_version: string; compression_strategy_version: string; content: string; created_at: string; }
 interface AuditRow { session_id: string; run_id: string | null; sequence: number; event_type: string; step: number | null; tool_call_id: string | null; tool_name: string | null; attempt: number | null; status: string | null; error_code: string | null; request_id: string | null; metadata_json: string | null; created_at: string; }
 function sessionFromRow(row: SessionRow): SessionRecord { return { id: row.id, workspaceRoot: row.workspace_root, status: row.status, createdAt: row.created_at, updatedAt: row.updated_at, schemaVersion: row.schema_version }; }
 function runFromRow(row: RunRow): StoredRunRecord { return { id: row.id, sessionId: row.session_id, status: row.status, input: row.input, ...(row.final_text === null ? {} : { finalText: row.final_text }), ...(row.error === null ? {} : { error: row.error }), startedAt: row.started_at, ...(row.finished_at === null ? {} : { finishedAt: row.finished_at }), ...(row.result_json === null ? {} : { result: JSON.parse(row.result_json) as StoredRunRecord["result"] }), ...(row.owner_id === null ? {} : { ownerId: row.owner_id }), ...(row.lease_until === null ? {} : { leaseUntil: row.lease_until }) }; }

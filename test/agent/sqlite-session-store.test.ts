@@ -9,6 +9,7 @@ import { SqliteSessionStore } from "../../src/agent/sqlite-session-store.ts";
 import type { ModelClient, ModelResponse } from "../../src/agent/types.ts";
 import { DefaultContextManager } from "../../src/agent/context-manager.ts";
 import { DatabaseSync } from "node:sqlite";
+import crypto from "node:crypto";
 
 const capabilities = { toolCalling: false, streaming: false } as const;
 
@@ -178,6 +179,33 @@ test("SQLite SessionStore rejects duplicate sessions and workspace-mismatched re
     await assert.rejects(() => manager.create("session-unique"));
     await assert.rejects(() => new SessionManager(new Agent(model(), undefined, { includeRunDiff: false }), store, path.join(root, "other")).load("session-unique"), /workspace/);
     await store.close();
+  });
+});
+
+test("SQLite summary cache survives restart and is reused independently of context checkpoints", async () => {
+  await withDatabase(async (_root, databasePath) => {
+    const messages: import("../../src/agent/types.ts").Message[] = [
+      { role: "user", content: "old request ".repeat(20) },
+      { role: "assistant", content: "old response ".repeat(20) },
+      { role: "user", content: "new request" },
+    ];
+    const sourceHash = crypto.createHash("sha256").update(JSON.stringify(messages.slice(0, 2))).digest("hex");
+    const cacheKey = `${sourceHash}:summary-v1:context-compaction-v1`;
+    const firstStore = new SqliteSessionStore(databasePath);
+    let firstCalls = 0;
+    await new DefaultContextManager({ summarize: async () => { firstCalls += 1; return "cached across restart"; } })
+      .compact(messages, { maxInputTokens: 60, recentTurns: 1 }, firstStore);
+    assert.equal(firstCalls, 1);
+    assert.equal((await firstStore.getSummaryCache(cacheKey))?.content, "cached across restart");
+    await firstStore.close();
+
+    const reopenedStore = new SqliteSessionStore(databasePath);
+    let secondCalls = 0;
+    const result = await new DefaultContextManager({ summarize: async () => { secondCalls += 1; return "should not run"; } })
+      .compact(messages, { maxInputTokens: 60, recentTurns: 1 }, reopenedStore);
+    assert.equal(secondCalls, 0);
+    assert.ok(result.messages.some((message) => message.content.includes("cached across restart")));
+    await reopenedStore.close();
   });
 });
 

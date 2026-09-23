@@ -176,6 +176,18 @@ export interface ContextSummary {
   readonly sourceMessageIndexes: readonly number[];
   readonly content: string;
 }
+export interface SummaryCacheEntry {
+  readonly cacheKey: string;
+  readonly sourceHash: string;
+  readonly summaryVersion: string;
+  readonly compressionStrategyVersion: string;
+  readonly content: string;
+  readonly createdAt: string;
+}
+export interface SummaryCacheStore {
+  getSummaryCache(cacheKey: string): Promise<SummaryCacheEntry | undefined>;
+  saveSummaryCache(entry: SummaryCacheEntry): Promise<void>;
+}
 export interface ContextCheckpoint {
   readonly sessionId: string;
   /** 每次 ContextState 更新递增；parentVersion 用于诊断连续压缩链。 */
@@ -214,7 +226,7 @@ export interface ContextResult {
 
 export interface ContextManager {
   estimate(messages: readonly Message[]): number;
-  compact(messages: readonly Message[], budget: number | ContextBudget): Promise<ContextResult>;
+  compact(messages: readonly Message[], budget: number | ContextBudget, summaryCache?: SummaryCacheStore): Promise<ContextResult>;
   observeUsage?(context: ContextResult, usage: ModelUsage): void;
   buildRequestContext(sessionId: string, input: string): Promise<readonly Message[]>;
   exportCheckpoint?(sessionId: string, messages: readonly Message[], budget?: ContextBudget): Promise<ContextCheckpoint | undefined>;
@@ -393,6 +405,8 @@ export interface AgentRunOptions {
   /** 从已持久化的 run 内 checkpoint 继续，不能与新输入拼接。 */
   resumeCheckpoint?: CheckpointRecord;
   auditSink?: AuditSink;
+  /** 持久化摘要缓存仅优化摘要生成，不参与 ContextState 恢复决策。 */
+  summaryCache?: SummaryCacheStore;
   /** 可选的 Git 基线跟踪器；仅采集只读状态，不参与任何 Git 写入。 */
   gitChangeTracker?: import("../repository/git.ts").GitChangeTracker;
 }

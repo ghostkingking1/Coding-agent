@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import type { ContextBudget, ContextCheckpoint, ContextDegradation, ContextManager, ContextResult, ContextStageResult, ContextSummary, Message, ModelUsage } from "./types.ts";
+import type { ContextBudget, ContextCheckpoint, ContextDegradation, ContextManager, ContextResult, ContextStageResult, ContextSummary, Message, ModelUsage, SummaryCacheStore } from "./types.ts";
 
 const SUMMARY_VERSION = "summary-v1";
 const COMPRESSION_STRATEGY_VERSION = "context-compaction-v1";
@@ -50,7 +50,7 @@ export class DefaultContextManager implements ContextManager {
     return (await this.compact(source, { maxInputTokens: 32_000, recentTurns: this.options.recentTurns ?? 10, maxToolOutputTokens: this.options.maxToolOutputTokens ?? 4_000 })).messages;
   }
 
-  async compact(messages: readonly Message[], budget: number | ContextBudget): Promise<ContextResult> {
+  async compact(messages: readonly Message[], budget: number | ContextBudget, persistentCache?: SummaryCacheStore): Promise<ContextResult> {
     const limit = typeof budget === "number" ? budget : budget.maxInputTokens;
     if (!Number.isInteger(limit) || limit < 1) throw new Error("context budget must be a positive integer");
     const thresholdRatio = typeof budget === "number" ? 1 : budget.compactThresholdRatio ?? 0.75;
@@ -87,7 +87,7 @@ export class DefaultContextManager implements ContextManager {
     const retainedIndexes = new Set(retained.flatMap(({ sourceIndexes }) => sourceIndexes));
     const dropped = view.filter(({ message, sourceIndexes }) => message.role !== "system" && !sourceIndexes.some((index) => retainedIndexes.has(index)));
     if (dropped.length > 0) {
-      const summaryContent = await this.makeSummary(dropped.map(({ message }) => message));
+      const summaryContent = await this.makeSummary(dropped.map(({ message }) => message), persistentCache);
       const summary: ContextSummary = { summaryId: `sum_${crypto.randomUUID()}`, sourceMessageIndexes: dropped.flatMap(({ sourceIndexes }) => sourceIndexes), content: summaryContent };
       summaries.push(summary);
       view = insertSummary(system, retained, { sourceIndexes: dropped.flatMap(({ sourceIndexes }) => sourceIndexes), message: { role: "assistant", content: `[历史摘要 ${summary.summaryId}]\n${summaryContent}` } });
@@ -126,14 +126,29 @@ export class DefaultContextManager implements ContextManager {
     };
   }
 
-  private async makeSummary(messages: readonly Message[]): Promise<string> {
-    const key = versionedSummaryKey(messages);
+  private async makeSummary(messages: readonly Message[], persistentCache?: SummaryCacheStore): Promise<string> {
+    const sourceHash = summaryKey(messages);
+    const key = versionedSummaryKeyFromHash(sourceHash);
     const cached = this.summaryCache.get(key);
     if (cached !== undefined) return cached;
+    if (persistentCache) {
+      try {
+        const persisted = await persistentCache.getSummaryCache(key);
+        if (persisted && persisted.sourceHash === sourceHash && persisted.summaryVersion === SUMMARY_VERSION && persisted.compressionStrategyVersion === COMPRESSION_STRATEGY_VERSION) {
+          this.summaryCache.set(key, persisted.content);
+          return persisted.content;
+        }
+      } catch { /* 缓存不可用不能阻断摘要，checkpoint 仍是独立恢复状态。 */ }
+    }
     let summary: string | undefined;
     try { if (this.options.summarize) summary = await this.options.summarize(messages); } catch { /* 摘要服务失败时使用本地确定性摘要。 */ }
     summary ??= messages.map((message) => `${message.role}: ${message.content.slice(0, 240)}`).join("\n");
     this.summaryCache.set(key, summary);
+    if (persistentCache) {
+      try {
+        await persistentCache.saveSummaryCache({ cacheKey: key, sourceHash, summaryVersion: SUMMARY_VERSION, compressionStrategyVersion: COMPRESSION_STRATEGY_VERSION, content: summary, createdAt: new Date().toISOString() });
+      } catch { /* 摘要已可用；缓存写入失败只影响后续性能。 */ }
+    }
     return summary;
   }
 
@@ -189,8 +204,9 @@ function summaryKey(messages: readonly Message[]): string {
   return crypto.createHash("sha256").update(JSON.stringify(messages)).digest("hex");
 }
 function versionedSummaryKey(messages: readonly Message[]): string {
-  return `${summaryKey(messages)}:${SUMMARY_VERSION}:${COMPRESSION_STRATEGY_VERSION}`;
+  return versionedSummaryKeyFromHash(summaryKey(messages));
 }
+function versionedSummaryKeyFromHash(sourceHash: string): string { return `${sourceHash}:${SUMMARY_VERSION}:${COMPRESSION_STRATEGY_VERSION}`; }
 function prefixHash(messages: readonly Message[], sequence: number): string { return crypto.createHash("sha256").update(JSON.stringify(messages.slice(0, sequence + 1))).digest("hex"); }
 
 function cloneMessage(message: Message): Message {

@@ -64,7 +64,7 @@ Transcript（SQLite `messages`）始终保留完整原始消息；compaction 只
 
 ## 10. 当前边界
 
-**已实现**确定性估算、分阶段压缩、输出 artifact、版本化 context checkpoint、checkpoint 恢复后的增量拼接及 ContextState 替换；SummaryCache 仍是进程内性能优化。**部分实现**多次压缩的摘要质量和 token 估算精度；**后续计划**是接入更准确的 provider tokenizer、总体 deadline 和跨设备上下文恢复。
+**已实现**确定性估算、分阶段压缩、输出 artifact、版本化 context checkpoint、checkpoint 恢复后的增量拼接及 ContextState 替换；SummaryCache 独立存入 SQLite，按源消息 hash、摘要版本和压缩策略版本命中，最多保留最近 1000 条。缓存读取/写入失败不影响摘要生成或 checkpoint 恢复。**部分实现**多次压缩的摘要质量和 token 估算精度；**后续计划**是接入更准确的 provider tokenizer、总体 deadline 和跨设备上下文恢复。
 
 ## 11. 相关测试
 

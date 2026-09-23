@@ -126,6 +126,7 @@ export class Session {
         runId: pending.run.id,
         checkpoint: { save: (checkpoint) => this.store!.saveCheckpoint(checkpoint) },
         auditSink: { record: (event) => this.store!.record(event) },
+        summaryCache: this.store,
         resumeCheckpoint: pending.checkpoint,
       });
       const finishedAt = new Date().toISOString();
@@ -180,6 +181,7 @@ export class Session {
         gitChangeTracker: options.gitChangeTracker,
         checkpoint: this.store ? { save: (checkpoint) => this.store!.saveCheckpoint(checkpoint) } : undefined,
         auditSink: this.store ? { record: (event) => this.store!.record(event) } : undefined,
+        summaryCache: this.store,
       });
       const finishedAt = new Date().toISOString();
       if (heartbeat) clearInterval(heartbeat);
