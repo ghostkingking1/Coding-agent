@@ -21,3 +21,22 @@ test("GitChangeTracker distinguishes user and Agent changes", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "coding-agent-git-"));
   try { await exec("git", ["init", "-q", root]); await exec("git", ["-C", root, "config", "user.email", "test@example.com"]); await exec("git", ["-C", root, "config", "user.name", "Test"]); await fs.writeFile(path.join(root, "existing.txt"), "base\n"); await exec("git", ["-C", root, "add", "."]); await exec("git", ["-C", root, "commit", "-qm", "initial"]); await fs.writeFile(path.join(root, "existing.txt"), "user edit\n"); const repository = new GitRepository(root); const tracker = new GitChangeTracker(repository); await tracker.start(); await fs.writeFile(path.join(root, "agent.txt"), "agent\n"); const report = await tracker.finish({ sessionId: "s", runId: "r", files: [{ path: "agent.txt", diff: "" }], text: "", truncated: false, complete: true, omittedPaths: [], untrackedPaths: [] }); assert.deepEqual(report.userModifiedPaths, ["existing.txt"]); assert.deepEqual(report.agentModifiedPaths, ["agent.txt"]); } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
+test("GitChangeTracker keeps the first baseline across a repair Execute", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "coding-agent-git-"));
+  try {
+    await exec("git", ["init", "-q", root]);
+    await exec("git", ["-C", root, "config", "user.email", "test@example.com"]);
+    await exec("git", ["-C", root, "config", "user.name", "Test"]);
+    await fs.writeFile(path.join(root, "tracked.txt"), "base\n");
+    await exec("git", ["-C", root, "add", "."]);
+    await exec("git", ["-C", root, "commit", "-qm", "initial"]);
+    const repository = new GitRepository(root);
+    const tracker = new GitChangeTracker(repository);
+    await tracker.start();
+    await fs.writeFile(path.join(root, "user.txt"), "user\n");
+    await tracker.start();
+    await fs.writeFile(path.join(root, "user.txt"), "user plus repair\n");
+    const report = await tracker.finish({ sessionId: "s", runId: "r", files: [{ path: "user.txt", diff: "" }], text: "", truncated: false, complete: true, omittedPaths: [], untrackedPaths: [] });
+    assert.deepEqual(report.overlappingPaths, []);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});

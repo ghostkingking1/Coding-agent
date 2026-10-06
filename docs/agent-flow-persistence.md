@@ -2,13 +2,14 @@
 
 ## 1. 目标
 
-把 Session、Run 和已提交消息保存为可查询的结构化记录，使进程重启后能够恢复上下文并解释运行结果。
+把 Session、Run、原始归档和活动上下文保存为可查询的结构化记录，使进程重启后能够直接恢复压缩后的上下文并解释运行结果。
 
 ## 2. 整体流程
 
 ```text
 Session.initialize -> sessions
 Session.run        -> startRun -> runs(running)
+工具完成           -> ContextCheckpoint 增量更新活动上下文
 成功               -> completeRun 事务 -> runs + messages + session 更新时间
 失败               -> failRun 事务 -> runs(failed/interrupted)
 恢复               -> 查询 sessions/runs/messages -> Session.restore
@@ -35,7 +36,17 @@ Session.run        -> startRun -> runs(running)
 
 ### `messages`
 
-保存 Session 内按 `sequence` 排序的完整消息。除 `role` 和 `content` 外，tool 消息保存 `tool_call_id/tool_name`，assistant 消息保存 `tool_calls_json`。
+保存 Session 内按 `sequence` 排序的原始消息归档。它用于审计和结果解释，不再作为下一轮模型上下文的拼接源。除 `role` 和 `content` 外，tool 消息保存 `tool_call_id/tool_name`，assistant 消息保存 `tool_calls_json`。
+
+### `checkpoints`
+
+统一保存运行恢复 checkpoint 和会话活动上下文 checkpoint。`checkpoint_kind='run'` 时，`context_json` 保存运行恢复所需的当前上下文，`tool_results_json` 保存工具输出 JSON；`checkpoint_kind='context'` 时，`context_json` 保存唯一活动上下文，`metadata_json` 保存摘要段、版本和原始归档关联信息。旧的 `context_checkpoints` 表由 schema v9 迁移后删除。
+
+活动上下文每次工具完成后都会增量更新；`messages` 原始归档和 checkpoint 上下文不再互相拼接。
+
+### `summary_cache`
+
+仅用于避免重复计算摘要的性能缓存。缓存失效或写入失败不能阻断活动上下文保存，也不能承担恢复职责。
 
 ### `audit_events`
 
@@ -43,13 +54,13 @@ Session.run        -> startRun -> runs(running)
 
 ### `schema_migrations`
 
-保存数据库 schema 版本，当前 schema version 为 2。
+保存数据库 schema 版本，当前 schema version 为 9。
 
 ## 5. 关键决策
 
-- 成功 run 的运行记录和新增消息必须在同一事务提交。
+- 成功 run 的运行记录和原始归档消息必须在同一事务提交；活动上下文由工具完成后的 checkpoint 独立持久化。
 - `sequence` 在 Session 内唯一，恢复按序读取。
-- 失败 run 不插入部分消息。
+- `messages` 是审计归档，不是模型上下文 source of truth；恢复只读取统一 `checkpoints` 表中 `checkpoint_kind='context'` 的 `context_json`。
 - schema 版本高于当前支持版本时拒绝打开数据库。
 - 过期 lease 才能被恢复流程标记为 interrupted。
 
@@ -59,7 +70,7 @@ Session.run        -> startRun -> runs(running)
 重复 Session ID -> 主键约束失败
 数据库 schema 更新 -> 执行迁移；版本过新则拒绝
 completeRun 写入失败 -> 事务回滚
-进程异常退出 -> running 保留；后续按 lease 判断
+进程异常退出 -> running 保留；后续按 lease 判断；最近一次活动上下文 checkpoint 可直接用于恢复
 ```
 
 ## 7. 持久化 / 审计
@@ -75,11 +86,11 @@ SQLite 使用 WAL、foreign keys 和 busy timeout。`completeRun` 在一个事�
 
 ## 9. 设计原因
 
-用 `SessionStore` 抽象隔离 Agent 与 SQLite，便于测试替身和未来存储替换；把消息按 Session 全局顺序保存，恢复时可以直接重建上下文；事务保证运行状态和消息不会出现半提交。
+用 `SessionStore` 抽象隔离 Agent 与 SQLite，便于测试替身和未来存储替换；把原始消息和活动上下文分成两种语义，避免压缩后的模型视图与审计归档互相污染；事务保证运行状态和归档消息不会出现半提交。
 
 ## 10. 当前边界
 
-**已实现**结构化 Session/Run/Message、checkpoint、过期 run 恢复、工具幂等结果、迁移和独立 `audit_events`；**部分实现**审计查询 API 和跨设备恢复；**未实现**服务端 response id 的自动持久化及完整任务级恢复策略。
+**已实现**结构化 Session/Run/Message、活动上下文 checkpoint、工具完成后的增量持久化、过期 run 恢复、工具幂等结果、迁移和独立 `audit_events`；**部分实现**审计查询 API 和跨设备恢复；**未实现**服务端 response id 的自动持久化及完整任务级恢复策略。
 
 ## 11. 相关测试
 

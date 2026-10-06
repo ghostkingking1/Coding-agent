@@ -249,6 +249,39 @@ test("reuses checkpointed tool results instead of executing the tool twice", asy
   assert.ok(checkpoints.some((checkpoint) => checkpoint.phase === "tool"));
 });
 
+test("resume keeps previously committed tool results while completing the remaining calls", async () => {
+  const executions: string[] = [];
+  const checkpoints: import("../../src/agent/types.ts").CheckpointRecord[] = [];
+  const model: ModelClient = {
+    provider: "fake", model: "fake", capabilities: fakeCapabilities,
+    async generate(request): Promise<ModelResponse> {
+      assert.deepEqual(request.messages.filter((message) => message.role === "tool").map((message) => message.toolCallId), ["a", "b"]);
+      return { message: { role: "assistant", content: "done" } };
+    },
+  };
+  const registry = new ToolRegistry({ authorize: async () => undefined })
+    .register({ name: "a", description: "a", manifest: { capabilities: ["read"] as const }, execute: () => { executions.push("a"); return "new-a"; } })
+    .register({ name: "b", description: "b", manifest: { capabilities: ["read"] as const }, execute: () => { executions.push("b"); return "new-b"; } });
+  const checkpoint: import("../../src/agent/types.ts").CheckpointRecord = {
+    sessionId: "s", runId: "r", step: 1, phase: "tool",
+    messages: [
+      { role: "user", content: "inspect" },
+      { role: "assistant", content: "", toolCalls: [{ id: "a", name: "a", input: null }, { id: "b", name: "b", input: null }] },
+      { role: "tool", content: "saved-a", toolCallId: "a", toolName: "a" },
+    ],
+    toolResults: [{ key: "r:1:a", toolCallId: "a", toolName: "a", status: "completed", result: "saved-a" }],
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  };
+  await new Agent(model, registry, { includeRunDiff: false }).run("ignored", {
+    sessionId: "s", runId: "r", resumeCheckpoint: checkpoint,
+    checkpoint: { save: async (value) => { checkpoints.push(value); } },
+  });
+  assert.deepEqual(executions, ["b"]);
+  const latest = checkpoints.filter((value) => value.phase === "tool").at(-1);
+  assert.deepEqual(latest?.toolResults.map((result) => result.toolCallId), ["a", "b"]);
+  assert.deepEqual(latest?.messages.filter((message) => message.role === "tool").map((message) => message.toolCallId), ["a", "b"]);
+});
+
 test("executes parallelizable tool calls concurrently and returns declared order", async () => {
   let active = 0;
   let peak = 0;
@@ -300,7 +333,7 @@ test("enforces the concurrency limit and conflict keys", async () => {
   assert.equal(peak, 2);
 });
 
-test("emits batch lifecycle events and checkpoints after the complete batch", async () => {
+test("emits batch lifecycle events and incrementally checkpoints each committed tool", async () => {
   const events: string[] = [];
   let responses = 0;
   const checkpoints: import("../../src/agent/types.ts").CheckpointRecord[] = [];
@@ -311,8 +344,12 @@ test("emits batch lifecycle events and checkpoints after the complete batch", as
   const registry = new ToolRegistry().register({ name: "a", description: "a", manifest: { capabilities: ["read"] as const, parallelizable: true }, execute: () => "a" }).register({ name: "b", description: "b", manifest: { capabilities: ["read"] as const, parallelizable: true }, execute: () => "b" });
   await new Agent(model, registry, { includeRunDiff: false, onEvent: (event) => { events.push(event.type); } }).run("inspect", { sessionId: "s", runId: "r", checkpoint: { save: async (checkpoint) => { checkpoints.push(checkpoint); } } });
   assert.deepEqual(events.filter((event) => event.startsWith("tool_batch")), ["tool_batch_started", "tool_batch_finished"]);
-  assert.equal(checkpoints.filter((checkpoint) => checkpoint.phase === "tool").length, 1);
-  assert.deepEqual(checkpoints.find((checkpoint) => checkpoint.phase === "tool")?.toolResults.map((result) => result.toolCallId), ["a", "b"]);
+  const toolCheckpoints = checkpoints.filter((checkpoint) => checkpoint.phase === "tool");
+  assert.equal(toolCheckpoints.length, 2);
+  assert.deepEqual(toolCheckpoints[0]?.toolResults.map((result) => result.toolCallId), ["a"]);
+  assert.deepEqual(toolCheckpoints[1]?.toolResults.map((result) => result.toolCallId), ["a", "b"]);
+  assert.deepEqual(toolCheckpoints[0]?.messages.filter((message) => message.role === "tool").map((message) => message.toolCallId), ["a"]);
+  assert.deepEqual(toolCheckpoints[1]?.messages.filter((message) => message.role === "tool").map((message) => message.toolCallId), ["a", "b"]);
 });
 
 function createCodingTools(testResult: { readonly status: string; readonly passed: boolean }) {
@@ -366,6 +403,54 @@ test("coding verification requires a passing run_tests after a write", async () 
   assert.equal(result.verification.repairAttempts, 0);
   assert.equal(result.verification.evidence.length, 1);
   assert.equal(result.verification.evidence[0]?.status, "passed");
+});
+
+test("persists the active context incrementally after each tool completion", async () => {
+  const snapshots: Message[][] = [];
+  let responses = 0;
+  const model: ModelClient = {
+    provider: "fake", model: "fake", capabilities: fakeCapabilities,
+    async generate(request): Promise<ModelResponse> {
+      responses += 1;
+      if (responses === 1) return { message: { role: "assistant", content: "", toolCalls: [{ id: "a", name: "a", input: null }, { id: "b", name: "b", input: null }] } };
+      return { message: { role: "assistant", content: "done" } };
+    },
+  };
+  const registry = new ToolRegistry({ authorize: async () => undefined })
+    .register({ name: "a", description: "a", manifest: { capabilities: ["read"] as const, parallelizable: true }, execute: () => "a" })
+    .register({ name: "b", description: "b", manifest: { capabilities: ["read"] as const, parallelizable: true }, execute: () => "b" });
+  await new Agent(model, registry, { includeRunDiff: false }).run("inspect", { persistContext: async (messages) => { snapshots.push([...messages]); } });
+  assert.ok(snapshots.length >= 2);
+  assert.equal(snapshots[0]?.find((message) => message.role === "tool")?.content, "a");
+  assert.equal(snapshots.at(-1)?.filter((message) => message.role === "tool").length, 2);
+});
+
+test("checkpoint preserves verification state so recovery cannot finish an unverified write", async () => {
+  const checkpoints: import("../../src/agent/types.ts").CheckpointRecord[] = [];
+  let firstCalls = 0;
+  const crashingModel: ModelClient = {
+    provider: "fake", model: "fake", capabilities: fakeCapabilities,
+    async generate(): Promise<ModelResponse> {
+      firstCalls += 1;
+      if (firstCalls === 1) return { message: { role: "assistant", content: "editing", toolCalls: [{ id: "write", name: "apply_patch", input: {} }] } };
+      throw new Error("simulated interruption");
+    },
+  };
+  const tools = new ToolRegistry({ authorize: async () => undefined }).register({
+    name: "apply_patch", description: "write", manifest: { capabilities: ["write"] as const }, execute: () => "changed",
+  });
+  await assert.rejects(() => new Agent(crashingModel, tools, { includeRunDiff: false, verification: { mode: "coding", maxRepairAttempts: 1 } }).run("change", {
+    sessionId: "s", runId: "r", checkpoint: { save: async (checkpoint) => { checkpoints.push(checkpoint); } },
+  }), /simulated interruption/);
+  const checkpoint = checkpoints.at(-1);
+  assert.equal(checkpoint?.verification?.writeObserved, true);
+  assert.equal(checkpoint?.taskState, "verifying");
+
+  const resumedModel: ModelClient = { provider: "fake", model: "fake", capabilities: fakeCapabilities, async generate(): Promise<ModelResponse> { return { message: { role: "assistant", content: "finished without tests" } }; } };
+  const result = await new Agent(resumedModel, tools, { includeRunDiff: false, verification: { mode: "coding", maxRepairAttempts: 1 } }).run("ignored", { sessionId: "s", runId: "r", resumeCheckpoint: checkpoint });
+  assert.equal(result.stopReason, "blocked");
+  assert.equal(result.verification.writeObserved, true);
+  assert.equal(result.verification.verificationPassed, false);
 });
 
 test("coding verification injects a private reminder when the model finishes early", async () => {

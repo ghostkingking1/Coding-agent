@@ -13,7 +13,7 @@ export interface ContextManagerOptions {
 
 interface IndexedMessage { readonly message: Message; readonly sourceIndexes: readonly number[]; }
 
-/** 只生成模型视图，不修改 Session 中的完整 transcript。 */
+/** 把活动上下文压缩成下一轮模型直接使用的状态；原始 transcript 不作为恢复源。 */
 export class DefaultContextManager implements ContextManager {
   private readonly options: ContextManagerOptions;
   private calibrationFactor = 1;
@@ -155,10 +155,11 @@ export class DefaultContextManager implements ContextManager {
   async exportCheckpoint(sessionId: string, messages: readonly Message[], budget: ContextBudget = { maxInputTokens: 32_000, recentTurns: this.options.recentTurns ?? 10, maxToolOutputTokens: this.options.maxToolOutputTokens ?? 4_000 }): Promise<ContextCheckpoint | undefined> {
     const result = await this.compact(messages, budget);
     const previous = this.restoredSegments.get(sessionId) ?? [];
-    if (result.summaries.length === 0 && previous.length === 0) return undefined;
     const coveredThroughSequence = result.summaries.length > 0
       ? Math.max(...result.summaries.flatMap((summary) => summary.sourceMessageIndexes))
-      : Math.max(...previous.flatMap((summary) => summary.sourceMessageIndexes));
+      : previous.length > 0
+        ? Math.max(...previous.flatMap((summary) => summary.sourceMessageIndexes))
+        : Math.max(-1, result.messages.length - 1);
     const segments = [...previous, ...result.summaries].filter((segment, index, all) => all.findIndex((candidate) => candidate.summaryId === segment.summaryId || JSON.stringify(candidate.sourceMessageIndexes) === JSON.stringify(segment.sourceMessageIndexes)) === index);
     const checkpoint: ContextCheckpoint = {
       sessionId,
@@ -167,7 +168,7 @@ export class DefaultContextManager implements ContextManager {
       summaryVersion: SUMMARY_VERSION,
       compressionStrategyVersion: COMPRESSION_STRATEGY_VERSION,
       coveredThroughSequence,
-      sourcePrefixHash: prefixHash(messages, Math.min(coveredThroughSequence, messages.length - 1)),
+      sourcePrefixHash: prefixHash(result.messages, Math.min(coveredThroughSequence, result.messages.length - 1)),
       summarySegments: segments,
       retainedTailStart: coveredThroughSequence + 1,
       resumeMessages: result.messages,

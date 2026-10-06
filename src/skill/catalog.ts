@@ -6,7 +6,7 @@ import matter from "gray-matter";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { WorkspacePolicy } from "../tools/security.ts";
-import type { LoadedSkill, SkillCatalogLike, SkillDescriptor, SkillMatch, SkillManifest, SkillResource, SkillSource, SkillCatalogOptions } from "./types.ts";
+import type { LoadedSkill, SkillCatalogLike, SkillDescriptor, SkillManifest, SkillResource, SkillSource, SkillCatalogOptions, SkillVerification } from "./types.ts";
 
 const manifestSchema = z.object({
   name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/),
@@ -25,7 +25,6 @@ const DEFAULTS = {
   maxContentChars: 32_000,
   maxResourceBytes: 128 * 1024,
   maxResources: 64,
-  maxMatches: 8,
 } as const;
 
 /** 受控、只读的 SKILL.md 目录；Skill 内容永远不会改变工具授权。 */
@@ -43,9 +42,8 @@ export class SkillCatalog implements SkillCatalogLike {
       maxContentChars: options.maxContentChars ?? DEFAULTS.maxContentChars,
       maxResourceBytes: options.maxResourceBytes ?? DEFAULTS.maxResourceBytes,
       maxResources: options.maxResources ?? DEFAULTS.maxResources,
-      maxMatches: options.maxMatches ?? DEFAULTS.maxMatches,
     };
-    for (const key of ["maxSkills", "maxFileBytes", "maxContentChars", "maxResourceBytes", "maxResources", "maxMatches"] as const) {
+    for (const key of ["maxSkills", "maxFileBytes", "maxContentChars", "maxResourceBytes", "maxResources"] as const) {
       const value = this.options[key];
       if (!Number.isInteger(value) || value < 1) throw new Error(`${key} must be a positive integer`);
     }
@@ -72,26 +70,29 @@ export class SkillCatalog implements SkillCatalogLike {
 
   list(): readonly SkillDescriptor[] { return [...this.descriptors]; }
 
-  match(request: string): readonly SkillMatch[] {
-    const tokens = tokenize(request);
-    if (!tokens.length) return [];
-    return this.descriptors
-      .filter((skill) => skill.valid)
-      .map((skill) => scoreSkill(skill, tokens))
-      .filter((match) => match.score > 0)
-      .sort((a, b) => b.score - a.score || sourceRank(a.skill.source) - sourceRank(b.skill.source) || a.skill.manifest.name.localeCompare(b.skill.manifest.name))
-      .slice(0, this.options.maxMatches);
+  async verify(name: string, source?: SkillSource, expectedDigest?: string): Promise<SkillVerification> {
+    const descriptor = this.findDescriptor(name, source);
+    const raw = await fs.readFile(descriptor.instructionPath, "utf8");
+    const currentDigest = digestText(raw);
+    return { skill: descriptor, currentDigest, matchesCatalogDigest: currentDigest === descriptor.digest && (!expectedDigest || currentDigest === expectedDigest) };
   }
 
   async read(name: string, source?: SkillSource): Promise<LoadedSkill> {
-    const candidates = this.descriptors.filter((descriptor) => descriptor.valid && descriptor.manifest.name === name && (!source || descriptor.source === source));
-    const descriptor = candidates.sort((a, b) => sourceRank(a.source) - sourceRank(b.source))[0];
-    if (!descriptor) throw new Error(`Skill not found or invalid: ${name}${source ? ` (${source})` : ""}`);
+    const descriptor = this.findDescriptor(name, source);
     const raw = await fs.readFile(descriptor.instructionPath, "utf8");
+    // 用同一次读取的数据计算摘要并解析，避免校验后再次读取形成 TOCTOU 窗口。
+    if (digestText(raw) !== descriptor.digest) throw new Error(`Skill digest changed after discovery: ${name}`);
     const content = parseSkillDocument(raw).content;
     const truncated = content.length > this.options.maxContentChars;
     const resources = await this.readResources(descriptor);
     return { descriptor, content: content.slice(0, this.options.maxContentChars), resources, truncated };
+  }
+
+  private findDescriptor(name: string, source?: SkillSource): SkillDescriptor {
+    const candidates = this.descriptors.filter((descriptor) => descriptor.valid && descriptor.manifest.name === name && (!source || descriptor.source === source));
+    const descriptor = candidates.sort((a, b) => sourceRank(a.source) - sourceRank(b.source))[0];
+    if (!descriptor) throw new Error(`Skill not found or invalid: ${name}${source ? ` (${source})` : ""}`);
+    return descriptor;
   }
 
   private async scanRoot(root: string, source: SkillSource, output: SkillDescriptor[], resolveCandidate: (path: string) => string): Promise<void> {
@@ -181,18 +182,6 @@ function parseSkillDocument(raw: string): { frontmatter: Record<string, unknown>
   }
 }
 
-function scoreSkill(skill: SkillDescriptor, tokens: readonly string[]): SkillMatch {
-  const fields: Array<[string, string, number]> = [["name", skill.manifest.name, 6], ["description", skill.manifest.description, 2], ["trigger", (skill.manifest.triggers ?? []).join(" "), 4], ["tag", (skill.manifest.tags ?? []).join(" "), 3]];
-  let score = 0;
-  const reasons: string[] = [];
-  for (const [label, value, weight] of fields) {
-    const fieldTokens = tokenize(value);
-    const count = tokens.filter((token) => fieldTokens.includes(token)).length;
-    if (count) { score += count * weight; reasons.push(`${label} matched ${count} token(s)`); }
-  }
-  return { skill, score, reasons };
-}
-function tokenize(value: string): string[] { return [...new Set(value.toLocaleLowerCase().split(/[^\p{L}\p{N}]+/u).filter((token) => token.length > 1))]; }
 function sourceRank(source: SkillSource): number { return source === "repository" ? 0 : 1; }
 function digestText(value: string): string { return crypto.createHash("sha256").update(value).digest("hex"); }
 async function realDirectory(value: string): Promise<string | undefined> { try { const real = await fs.realpath(value); return (await fs.stat(real)).isDirectory() ? real : undefined; } catch { return undefined; } }

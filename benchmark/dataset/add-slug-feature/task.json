@@ -1,0 +1,12 @@
+{
+  "id": "add-slug-feature",
+  "title": "Add URL-safe slug generation",
+  "prompt": "Implement slugify(value): lowercase text, trim it, replace each run of non-alphanumeric characters with one hyphen, and remove leading/trailing hyphens.",
+  "fixture": "add-slug-feature/fixture",
+  "verification": "add-slug-feature/verification",
+  "baseCommit": "fixture-tree-v1:add-slug-feature",
+  "fixtureDigest": "sha256:bf9a9ace67abfb6c4688f045a01bc7ba1e1274140ba637402b1b00cb238d2188",
+  "environment": { "node": ">=22", "platform": "any" },
+  "limits": { "maxDurationMs": 120000, "maxSteps": 8 },
+  "diffRules": { "allowedPaths": ["slug.mjs"], "forbiddenPaths": ["verification/**"] }
+}

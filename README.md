@@ -12,7 +12,7 @@ npm test
 npm start -- "请检查这个项目"
 ```
 
-开发时可使用 `npm start -- "请求"`；不带参数时会在 TTY 中进入持续对话 REPL。安装全局命令后使用 `veil "请求"`，当前终端目录会作为 workspace；输入 `veil` 可进入持续对话，输入 `exit` 或 `quit` 退出。非 TTY 环境必须显式提供请求参数。
+开发时可使用 `npm start -- "请求"`；不带参数时会在 TTY 中进入持续对话 REPL。安装全局命令后使用 `veil "请求"`，当前终端目录会作为 workspace；输入 `veil` 可进入持续对话，输入 `exit` 或 `quit` 退出。交互式 Session 默认持久化到当前 workspace 的 `.veil/sessions.db`，下次在同一 workspace 启动会自动加载最近的 active Session；可用 `CODING_AGENT_SESSION_DB` 覆盖数据库路径。非 TTY 环境必须显式提供请求参数。
 
 全局安装：
 
@@ -22,7 +22,7 @@ veil --help
 veil "分析当前目录并运行测试"
 ```
 
-启动 `veil` 不要求模型配置：CLI 会先立即进入交互主界面；提交第一条普通请求时，才校验真实模型配置。未配置时该请求会明确报错，不会降级为模拟模型。
+启动 `veil` 不要求模型配置：CLI 会先立即进入交互主界面；提交第一条普通请求时，才校验真实模型配置。未配置时该请求会明确报错，不会降级为模拟模型。TTY 中可使用 `/cancel` 取消当前请求；重新启动时会检查过期 run 并保留可恢复 checkpoint。
 
 ## 工作模式与审批
 

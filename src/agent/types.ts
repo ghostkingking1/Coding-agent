@@ -195,14 +195,14 @@ export interface ContextCheckpoint {
   readonly parentVersion?: number;
   readonly summaryVersion?: string;
   readonly compressionStrategyVersion?: string;
-  /** Transcript 的稳定序号游标，而非压缩后内存数组下标。 */
+  /** 活动上下文/原始归档关联游标；恢复不再根据它拼接 transcript 尾部。 */
   readonly coveredThroughSequence: number;
   readonly sourcePrefixHash: string;
   readonly summarySegments: readonly ContextSummary[];
   readonly retainedTailStart: number;
-  /** 已经压缩并可直接作为恢复基线的模型视图，避免重新装载完整 transcript。 */
+  /** 已经压缩并可直接作为恢复基线的唯一活动上下文。 */
   readonly resumeMessages?: readonly Message[];
-  /** checkpoint 创建时已提交的数据库消息总数；恢复只读取此序号之后的增量。 */
+  /** checkpoint 创建时原始归档消息总数，仅供审计和一致性诊断。 */
   readonly sourceMessageCount?: number;
   readonly updatedAt: string;
 }
@@ -348,10 +348,11 @@ export interface Tool<TInput = unknown> {
 /** Agent 运行过程中的可观测事件。 */
 export type RunEvent =
   | { type: "model_started"; step: number }
+  | { type: "model_usage"; step: number; usage: ModelUsage }
   | { type: "model_delta"; step: number; text: string }
   | { type: "model_retry"; step: number; attempt: number; errorCode: string; delayMs: number }
   | { type: "tool_batch_started"; step: number; batchId: string; toolCallCount: number; parallelCount: number }
-  | { type: "tool_requested"; step: number; toolName: string; toolCallId: string }
+  | { type: "tool_requested"; step: number; toolName: string; toolCallId: string; input?: string }
   | { type: "tool_completed"; step: number; toolName: string; toolCallId: string }
   | { type: "tool_failed"; step: number; toolName: string; toolCallId: string; error: string }
   | { type: "tool_batch_finished"; step: number; batchId: string; succeeded: number; failed: number }
@@ -404,9 +405,13 @@ export interface AgentRunOptions {
   replayToolResults?: ReadonlyMap<string, string>;
   /** 从已持久化的 run 内 checkpoint 继续，不能与新输入拼接。 */
   resumeCheckpoint?: CheckpointRecord;
+  /** 本次 run 专属取消信号；未提供时回退到 Agent 级信号。 */
+  signal?: AbortSignal;
   auditSink?: AuditSink;
   /** 持久化摘要缓存仅优化摘要生成，不参与 ContextState 恢复决策。 */
   summaryCache?: SummaryCacheStore;
+  /** 持久化当前活动上下文；恢复时只加载该状态，不再拼接原始 transcript。 */
+  persistContext?: (messages: readonly Message[]) => Promise<void>;
   /** 可选的 Git 基线跟踪器；仅采集只读状态，不参与任何 Git 写入。 */
   gitChangeTracker?: import("../repository/git.ts").GitChangeTracker;
 }
@@ -418,6 +423,10 @@ export interface CheckpointRecord {
   readonly phase: "model" | "tool";
   readonly messages: readonly Message[];
   readonly toolResults: readonly { readonly key: string; readonly toolCallId: string; readonly toolName: string; readonly status: "completed" | "failed"; readonly result: string }[];
+  /** 验证状态必须随执行 checkpoint 保存，恢复时不能丢失写入后的验证门禁。 */
+  readonly verification?: VerificationSummary;
+  /** 记录验证状态机本身，区分 repairing、blocked 等非验证枚举状态。 */
+  readonly taskState?: TaskState;
   readonly updatedAt: string;
 }
 
@@ -428,6 +437,8 @@ export interface AgentResult {
   finalText: string;
   /** 本次运行积累的完整消息记录。 */
   messages: readonly Message[];
+  /** 本轮未压缩的消息归档来源；恢复和模型上下文不读取它。 */
+  readonly transcriptMessages?: readonly Message[];
   /** 实际执行的模型循环次数。 */
   steps: number;
   /** 运行结束的原因。 */
@@ -436,6 +447,10 @@ export interface AgentResult {
   diff?: import("./run-diff.ts").RunDiff;
   /** 本次运行前后 Git 状态及与 Agent diff 的归属交叉结果。 */
   gitChanges?: import("../repository/git.ts").GitChangeReport;
+  /** 只有持久化 Session 且 Git tree 与上下文成功绑定时才存在。 */
+  recoveryPoint?: import("./recovery-point.ts").RecoveryPointRef;
   readonly taskState: TaskState;
   readonly verification: VerificationSummary;
+  /** 本次运行中各模型响应 usage 的累计值；provider 未提供 usage 时保持未定义。 */
+  readonly usage?: ModelUsage;
 }

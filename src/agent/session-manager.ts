@@ -8,7 +8,6 @@ export class SessionManager {
   private readonly agent: Agent;
   private readonly store: SessionStore;
   private readonly workspaceRoot: string;
-
   constructor(agent: Agent, store: SessionStore, workspaceRoot: string) {
     this.agent = agent;
     this.store = store;
@@ -56,11 +55,10 @@ export class SessionManager {
       const checkpoint = await this.store.getContextCheckpoint(sessionId);
       if (!checkpoint) return undefined;
       // 未版本化旧记录无法证明游标对应 Transcript sequence，安全回退到完整归档。
-      if (!checkpoint.resumeMessages || checkpoint.version === undefined || checkpoint.version < 1 ||
-          checkpoint.sourceMessageCount === undefined || checkpoint.coveredThroughSequence !== checkpoint.sourceMessageCount - 1) return undefined;
+      if (!checkpoint.resumeMessages || checkpoint.version === undefined || checkpoint.version < 1) return undefined;
       if (checkpoint.summaryVersion !== "summary-v1" || checkpoint.compressionStrategyVersion !== "context-compaction-v1") return undefined;
       const count = this.store.countMessages ? await this.store.countMessages(sessionId) : undefined;
-      if (count !== undefined && checkpoint.sourceMessageCount > count) return undefined;
+      if (count !== undefined && checkpoint.sourceMessageCount !== undefined && checkpoint.sourceMessageCount > count) return undefined;
       return checkpoint;
     } catch {
       // 损坏或无法解码的 checkpoint 不阻断会话；Transcript 是恢复兜底来源。
@@ -74,13 +72,12 @@ export class SessionManager {
       return { messages, persistedMessageCount: messages.length };
     }
     const persistedMessageCount = await this.store.countMessages(sessionId);
-    if (!checkpoint?.resumeMessages || checkpoint.sourceMessageCount === undefined || checkpoint.sourceMessageCount > persistedMessageCount) {
+    if (!checkpoint?.resumeMessages) {
       return { messages: [...await this.store.listMessages(sessionId)], persistedMessageCount };
     }
-    const tail = await this.store.listMessagesFrom(sessionId, checkpoint.sourceMessageCount);
     const restored = checkpoint.resumeMessages.map((message, sequence) => ({ sessionId, sequence, message, createdAt: checkpoint.updatedAt }));
-    await this.store.record({ sessionId, eventType: "context_checkpoint_restored", status: "restored", metadata: { sourceMessageCount: checkpoint.sourceMessageCount, resumeMessageCount: restored.length, tailMessageCount: tail.length } });
-    return { messages: [...restored, ...tail], persistedMessageCount };
+    await this.store.record({ sessionId, eventType: "context_checkpoint_restored", status: "restored", metadata: { sourceMessageCount: checkpoint.sourceMessageCount ?? null, resumeMessageCount: restored.length, tailMessageCount: 0 } });
+    return { messages: restored, persistedMessageCount };
   }
   private async requireSession(sessionId: string): Promise<SessionRecord> { const record = await this.store.getSession(sessionId); if (!record) throw new Error(`Session not found: ${sessionId}`); return record; }
 }

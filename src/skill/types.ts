@@ -30,10 +30,10 @@ export interface SkillDescriptor {
   readonly resourceCount: number;
 }
 
-export interface SkillMatch {
+export interface SkillVerification {
   readonly skill: SkillDescriptor;
-  readonly score: number;
-  readonly reasons: readonly string[];
+  readonly currentDigest: string;
+  readonly matchesCatalogDigest: boolean;
 }
 
 export interface LoadedSkill {
@@ -51,13 +51,12 @@ export interface SkillCatalogOptions {
   readonly maxContentChars?: number;
   readonly maxResourceBytes?: number;
   readonly maxResources?: number;
-  readonly maxMatches?: number;
 }
 
 export interface SkillCatalogLike {
   list(): readonly SkillDescriptor[];
-  match(request: string): readonly SkillMatch[];
   read(name: string, source?: SkillSource): Promise<LoadedSkill>;
+  verify(name: string, source?: SkillSource, expectedDigest?: string): Promise<SkillVerification>;
 }
 
 export interface SkillCaptureInput {

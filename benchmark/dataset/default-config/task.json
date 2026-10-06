@@ -1,0 +1,12 @@
+{
+  "id": "default-config",
+  "title": "Apply defaults without mutating input",
+  "prompt": "Implement withDefaults(config, defaults) so defaults fill only missing or undefined keys; explicit null/false/zero values are preserved and neither input object is mutated.",
+  "fixture": "default-config/fixture",
+  "verification": "default-config/verification",
+  "baseCommit": "fixture-tree-v1:default-config",
+  "fixtureDigest": "sha256:4c032617b2b8a799291ab04412a773398036eed6f7ce745af313687d654cf291",
+  "environment": { "node": ">=22", "platform": "any" },
+  "limits": { "maxDurationMs": 120000, "maxSteps": 8 },
+  "diffRules": { "allowedPaths": ["config.mjs"], "forbiddenPaths": ["verification/**"] }
+}

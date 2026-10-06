@@ -1,0 +1,12 @@
+{
+  "id": "fix-login-bug",
+  "title": "Reject locked users and invalid passwords",
+  "prompt": "Fix authenticate() so locked users are rejected and authentication requires a valid password. Keep the existing export API.",
+  "fixture": "fix-login-bug/fixture",
+  "verification": "fix-login-bug/verification",
+  "baseCommit": "fixture-tree-v1:fix-login-bug",
+  "fixtureDigest": "sha256:5bc635270a383d64d5e9bd874e1dd66de7ca2b9816e365c1ea0987a35229bbff",
+  "environment": { "node": ">=22", "platform": "any" },
+  "limits": { "maxDurationMs": 300000, "maxSteps": 14 },
+  "diffRules": { "allowedPaths": ["auth.mjs", "auth.test.mjs"], "forbiddenPaths": ["package.json", "verification/**"] }
+}

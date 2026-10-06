@@ -3,9 +3,11 @@ import { Agent } from "./agent.ts";
 import type { AgentResult, AgentRunOptions, CheckpointRecord, Message } from "./types.ts";
 import { RunChangeTracker } from "./run-diff.ts";
 import type { SessionRecord, SessionStore, StoredMessage, StoredRunRecord } from "./session-store.ts";
+import { RecoveryPointCoordinator } from "./recovery-point.ts";
+import { GitRepository } from "../repository/git.ts";
 
 export type SessionStatus = "active" | "closed";
-export type RunStatus = "completed" | "failed";
+export type RunStatus = "completed" | "failed" | "interrupted";
 
 export interface RunResult extends AgentResult {
   readonly status: "completed";
@@ -18,7 +20,7 @@ export interface RunResult extends AgentResult {
 export interface FailedRun {
   readonly sessionId: string;
   readonly runId: string;
-  readonly status: "failed";
+  readonly status: "failed" | "interrupted";
   readonly startedAt: string;
   readonly finishedAt: string;
   readonly error: string;
@@ -42,7 +44,7 @@ export interface SessionOptions {
   readonly workspaceRoot?: string;
 }
 
-/** 管理多个 Agent run 共享的消息上下文和生命周期。 */
+  /** 管理多个 Agent run 共享的活动上下文和生命周期；原始消息由 Store 归档。 */
 export class Session {
   readonly sessionId: string;
   private readonly agent: Agent;
@@ -53,6 +55,8 @@ export class Session {
   private readonly changeTracker?: RunChangeTracker;
   private readonly store?: SessionStore;
   private readonly workspaceRoot?: string;
+  private readonly recoveryCoordinator?: RecoveryPointCoordinator;
+  private recoveryEligible = false;
   private persisted = false;
   /** 内存 context 可能已压缩，数据库 sequence 必须独立按完整 transcript 递增。 */
   private persistedMessageCount = 0;
@@ -66,6 +70,9 @@ export class Session {
     this.changeTracker = options.changeTracker;
     this.store = options.store;
     this.workspaceRoot = options.workspaceRoot;
+    if (this.store && this.workspaceRoot) {
+      this.recoveryCoordinator = new RecoveryPointCoordinator(this.store, new GitRepository(this.workspaceRoot));
+    }
     if (this.store && !this.workspaceRoot) throw new Error("workspaceRoot is required when a SessionStore is configured");
   }
 
@@ -109,11 +116,12 @@ export class Session {
   }
 
   /** 显式续跑已中断 run；尚未完成的工具仍会经过原审批策略。 */
-  async resume(): Promise<RunResult> {
+  async resume(options: { readonly signal?: AbortSignal } = {}): Promise<RunResult> {
     const pending = this.resumable;
     if (!pending) throw new Error("Session has no resumable checkpoint");
     if (this.running) throw new Error("Session already has a run in progress");
     this.running = true;
+    this.recoveryEligible = await this.recoveryCoordinator?.canCreate() ?? false;
     let heartbeat: NodeJS.Timeout | undefined;
     try {
       const leaseUntil = new Date(Date.now() + 30_000).toISOString();
@@ -128,11 +136,13 @@ export class Session {
         auditSink: { record: (event) => this.store!.record(event) },
         summaryCache: this.store,
         resumeCheckpoint: pending.checkpoint,
+        signal: options.signal,
+        persistContext: (messages) => this.persistActiveContext(messages),
       });
       const finishedAt = new Date().toISOString();
       clearInterval(heartbeat);
       const runResult: RunResult = { ...result, status: "completed", sessionId: this.sessionId, runId: pending.run.id, startedAt: pending.run.startedAt, finishedAt };
-      const newMessages = result.messages.slice(this.context.length);
+      const newMessages = (result.transcriptMessages ?? result.messages).slice(this.context.length);
       await this.store!.completeRun({ run: { id: pending.run.id, sessionId: this.sessionId, status: "completed", input: pending.run.input, finalText: result.finalText, startedAt: pending.run.startedAt, finishedAt, result }, messages: newMessages.map((message, index) => ({ sessionId: this.sessionId, runId: pending.run.id, sequence: this.persistedMessageCount + index, message, createdAt: finishedAt })) });
       await this.store!.record({ sessionId: this.sessionId, runId: pending.run.id, eventType: "run_completed" });
       this.persistedMessageCount += newMessages.length;
@@ -144,19 +154,23 @@ export class Session {
         await this.store!.saveContextCheckpoint(state);
         if (state.resumeMessages) this.context = [...state.resumeMessages];
       }
+      await this.recoveryCoordinator?.createForCompletedRun({ sessionId: this.sessionId, runId: pending.run.id, verification: result.verification, eligibleAtStart: this.recoveryEligible });
       this.resumable = undefined;
       this.runHistory.push(runResult);
       return runResult;
     } catch (error) {
       if (heartbeat) clearInterval(heartbeat);
-      await this.store!.failRun({ sessionId: this.sessionId, runId: pending.run.id, status: "failed", error: error instanceof Error ? error.message : String(error), finishedAt: new Date().toISOString() });
-      await this.store!.record({ sessionId: this.sessionId, runId: pending.run.id, eventType: "run_failed", status: "failed" });
+      const interrupted = isAbortError(error, options.signal);
+      const finishedAt = new Date().toISOString();
+      await this.store!.failRun({ sessionId: this.sessionId, runId: pending.run.id, status: interrupted ? "interrupted" : "failed", error: error instanceof Error ? error.message : String(error), finishedAt });
+      await this.store!.record({ sessionId: this.sessionId, runId: pending.run.id, eventType: interrupted ? "run_interrupted" : "run_failed", status: interrupted ? "interrupted" : "failed" });
+      if (!interrupted) this.resumable = undefined;
       throw error;
     } finally { this.running = false; }
   }
 
-  /** 顺序执行一次 run；成功的完整消息上下文才会提交到 Session。 */
-  async run(input: string, options: Pick<AgentRunOptions, "changeTracker" | "gitChangeTracker"> = {}): Promise<RunResult> {
+  /** 顺序执行一次 run；成功后提交活动上下文，并把本轮原始增量写入归档。 */
+  async run(input: string, options: Pick<AgentRunOptions, "changeTracker" | "gitChangeTracker" | "signal"> = {}): Promise<RunResult> {
     if (this.statusValue === "closed") throw new Error("Session is closed");
     if (this.running) throw new Error("Session already has a run in progress");
     const runId = `run_${crypto.randomUUID()}`;
@@ -171,6 +185,7 @@ export class Session {
       await this.store?.record({ sessionId: this.sessionId, runId, eventType: "run_started" });
       heartbeat = this.store ? setInterval(() => { void this.store?.heartbeatRun(this.sessionId, runId, this.ownerId, new Date(Date.now() + 30_000).toISOString()); }, 5_000) : undefined;
       const changeTracker = options.changeTracker ?? this.changeTracker;
+      this.recoveryEligible = await this.recoveryCoordinator?.canCreate() ?? false;
       // 由 Session 分配的 runId 决定本轮 baseline 目录，保证磁盘审计身份和运行记录一致。
       await changeTracker?.start(runId);
       const result = await this.agent.run(input, {
@@ -182,11 +197,13 @@ export class Session {
         checkpoint: this.store ? { save: (checkpoint) => this.store!.saveCheckpoint(checkpoint) } : undefined,
         auditSink: this.store ? { record: (event) => this.store!.record(event) } : undefined,
         summaryCache: this.store,
+        signal: options.signal,
+        persistContext: (messages) => this.persistActiveContext(messages),
       });
       const finishedAt = new Date().toISOString();
       if (heartbeat) clearInterval(heartbeat);
       const runResult: RunResult = { ...result, status: "completed", sessionId: this.sessionId, runId, startedAt, finishedAt };
-      const newMessages = result.messages.slice(this.context.length);
+      const newMessages = (result.transcriptMessages ?? result.messages).slice(this.context.length);
       await this.store?.completeRun({
         run: { id: runId, sessionId: this.sessionId, status: "completed", input, finalText: result.finalText, startedAt, finishedAt, result },
         messages: newMessages.map((message, index) => ({ sessionId: this.sessionId, runId, sequence: this.persistedMessageCount + index, message, createdAt: finishedAt })),
@@ -201,21 +218,27 @@ export class Session {
         await this.store?.saveContextCheckpoint(state);
         if (state.resumeMessages) this.context = [...state.resumeMessages];
       }
+      await this.recoveryCoordinator?.createForCompletedRun({ sessionId: this.sessionId, runId, verification: result.verification, eligibleAtStart: this.recoveryEligible });
       this.runHistory.push(runResult);
       return runResult;
     } catch (error) {
       if (heartbeat) clearInterval(heartbeat);
       const finishedAt = new Date().toISOString();
-      await this.store?.failRun({ sessionId: this.sessionId, runId, status: "failed", error: error instanceof Error ? error.message : String(error), finishedAt });
-      await this.store?.record({ sessionId: this.sessionId, runId, eventType: "run_failed", status: "failed" });
+      const interrupted = isAbortError(error, options.signal);
+      await this.store?.failRun({ sessionId: this.sessionId, runId, status: interrupted ? "interrupted" : "failed", error: error instanceof Error ? error.message : String(error), finishedAt });
+      await this.store?.record({ sessionId: this.sessionId, runId, eventType: interrupted ? "run_interrupted" : "run_failed", status: interrupted ? "interrupted" : "failed" });
       this.runHistory.push({
         sessionId: this.sessionId,
         runId,
-        status: "failed",
+        status: interrupted ? "interrupted" : "failed",
         startedAt,
         finishedAt,
         error: error instanceof Error ? error.message : String(error),
       });
+      if (interrupted && this.store) {
+        const checkpoint = await this.store.getCheckpoint(this.sessionId, runId);
+        if (checkpoint) this.resumable = { run: { id: runId, sessionId: this.sessionId, status: "interrupted", input, startedAt, finishedAt, error: "Run interrupted" }, checkpoint };
+      }
       throw error;
     } finally {
       this.running = false;
@@ -238,6 +261,33 @@ export class Session {
     };
   }
 
+  private async persistActiveContext(messages: readonly Message[]): Promise<void> {
+    if (!this.store) return;
+    const checkpoint = await this.agent.exportContextCheckpoint(this.sessionId, messages);
+    if (checkpoint) await this.store.saveContextCheckpoint(checkpoint);
+  }
+
+  async listRecoveryPoints(): Promise<readonly import("./recovery-point.ts").RecoveryPoint[]> {
+    if (!this.recoveryCoordinator) return [];
+    return await this.recoveryCoordinator.list(this.sessionId);
+  }
+
+  async rollbackRecoveryPoint(recoveryPointId: string, ownerId = this.ownerId): Promise<void> {
+    if (this.running) throw new Error("Session has a run in progress");
+    if (!this.recoveryCoordinator) throw new Error("Recovery points require a persistent Session");
+    await this.recoveryCoordinator.rollback(recoveryPointId, { sessionId: this.sessionId, ownerId });
+    const restored = await this.store?.getContextCheckpoint(this.sessionId);
+    if (restored?.resumeMessages) this.context = [...restored.resumeMessages];
+  }
+
+  async rollbackPreviousRecoveryPoint(ownerId = this.ownerId): Promise<void> {
+    if (this.running) throw new Error("Session has a run in progress");
+    if (!this.recoveryCoordinator) throw new Error("Recovery points require a persistent Session");
+    await this.recoveryCoordinator.rollbackPrevious(this.sessionId, ownerId);
+    const restored = await this.store?.getContextCheckpoint(this.sessionId);
+    if (restored?.resumeMessages) this.context = [...restored.resumeMessages];
+  }
+
   /** 获取当前 Session 的不可变结果快照。 */
   result(): SessionResult {
     const last = this.runHistory.at(-1);
@@ -253,8 +303,12 @@ export class Session {
 
 function toSessionRun(run: StoredRunRecord): SessionRun[] {
   if (run.status === "completed" && run.result && run.finishedAt) return [{ ...run.result, status: "completed", sessionId: run.sessionId, runId: run.id, startedAt: run.startedAt, finishedAt: run.finishedAt }];
-  if ((run.status === "failed" || run.status === "interrupted") && run.finishedAt) return [{ sessionId: run.sessionId, runId: run.id, status: "failed", startedAt: run.startedAt, finishedAt: run.finishedAt, error: run.error ?? run.status }];
+  if ((run.status === "failed" || run.status === "interrupted") && run.finishedAt) return [{ sessionId: run.sessionId, runId: run.id, status: run.status, startedAt: run.startedAt, finishedAt: run.finishedAt, error: run.error ?? run.status }];
   return [];
+}
+
+function isAbortError(error: unknown, signal?: AbortSignal): boolean {
+  return Boolean(signal?.aborted) || (error instanceof Error && (error.name === "AbortError" || error.message.toLowerCase().includes("aborted")));
 }
 
 function validateId(value: string, name: string): void {
