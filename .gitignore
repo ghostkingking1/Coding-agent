@@ -1,5 +1,7 @@
 node_modules/
 coverage/
+evaluation-output/
+.veil/
 dist/
 *.log
 .env

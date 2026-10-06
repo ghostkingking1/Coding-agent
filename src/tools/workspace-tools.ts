@@ -22,8 +22,15 @@ const searchTextInputSchema = z.object({
   maxResults: z.number().int().min(1).max(1000).default(100),
 }).strict();
 
-/** 创建一组受 WorkspacePolicy 约束的文件读取、搜索、patch 和命令执行工具。 */
+/** 创建文件读取、搜索、patch 和命令工具；hostAccess 只能由已确认的 full 模式动态开启。 */
 export function createWorkspaceTools(policy: WorkspacePolicy, commandOptions: RunCommandToolOptions = {}): readonly Tool[] {
+  const hostAccess = commandOptions.hostAccess;
+  const useHostAccess = () => typeof hostAccess === "function" ? hostAccess() : hostAccess === true;
+  const resolveExisting = (input: unknown) => useHostAccess() ? policy.resolveHostExisting(input) : policy.resolveExisting(input);
+  const resolveFile = (input: unknown) => useHostAccess() ? policy.resolveHostFile(input) : policy.resolveFile(input);
+  const resolveDirectory = (input: unknown = ".") => useHostAccess() ? policy.resolveHostDirectory(input) : policy.resolveDirectory(input);
+  const displayPath = (value: string) => policy.relative(value);
+  const patchOptions = { hostAccess: useHostAccess };
   return [
     defineTool({
       name: "read_file",
@@ -34,9 +41,9 @@ export function createWorkspaceTools(policy: WorkspacePolicy, commandOptions: Ru
       inputSchema: readFileInputSchema,
       modelInputSchema: readFileModelInputSchema,
       async execute(input) {
-        const file = policy.resolveFile(input.path);
+        const file = resolveFile(input.path);
         const content = await fs.readFile(file.path, "utf8");
-        return { path: policy.relative(file.path), content };
+        return { path: displayPath(file.path), content };
       },
     }),
     defineTool({
@@ -48,7 +55,7 @@ export function createWorkspaceTools(policy: WorkspacePolicy, commandOptions: Ru
       inputSchema: listFilesInputSchema,
       modelInputSchema: listFilesModelInputSchema,
       async execute(input) {
-        const root = policy.resolveDirectory(input.path);
+        const root = resolveDirectory(input.path);
         const entries: string[] = [];
         /** 限制遍历深度和条目数量，避免大型仓库耗尽模型上下文。 */
         await walk(root, 0);
@@ -59,14 +66,14 @@ export function createWorkspaceTools(policy: WorkspacePolicy, commandOptions: Ru
           for (const child of children) {
             if (!policy.allowHidden && child.name.startsWith(".")) continue;
             if (entries.length >= policy.maxEntries) return;
-            const childPath = policy.resolveExisting(path.join(directory, child.name));
-            entries.push(policy.relative(childPath));
+            const childPath = resolveExisting(path.join(directory, child.name));
+            entries.push(displayPath(childPath));
             if (child.isDirectory() && currentDepth < input.depth) await walk(childPath, currentDepth + 1);
           }
         }
       },
     }),
-    createPatchTool(policy),
+    createPatchTool(policy, patchOptions),
     createRunCommandTool(policy, commandOptions),
     createRunTestsTool(policy, commandOptions),
     defineTool({
@@ -78,7 +85,7 @@ export function createWorkspaceTools(policy: WorkspacePolicy, commandOptions: Ru
       inputSchema: searchTextInputSchema,
       modelInputSchema: searchTextModelInputSchema,
       async execute(input) {
-        const root = policy.resolveDirectory(input.path);
+        const root = resolveDirectory(input.path);
         const results: Array<{ path: string; line: number; text: string }> = [];
         /** 返回有上限的逐行匹配结果，避免把整个文件内容塞入上下文。 */
         await search(root);
@@ -89,18 +96,18 @@ export function createWorkspaceTools(policy: WorkspacePolicy, commandOptions: Ru
           for (const child of children) {
             if (results.length >= input.maxResults) return;
             if (!policy.allowHidden && child.name.startsWith(".")) continue;
-            const childPath = policy.resolveExisting(path.join(directory, child.name));
+            const childPath = resolveExisting(path.join(directory, child.name));
             if (child.isDirectory()) {
               await search(childPath);
               continue;
             }
             if (!child.isFile()) continue;
-            const file = policy.resolveFile(childPath);
+            const file = resolveFile(childPath);
             const content = await fs.readFile(file.path, "utf8");
             if (content.includes("\0")) continue;
             content.split(/\r?\n/).forEach((text, index) => {
               if (results.length < input.maxResults && text.includes(input.query)) {
-                results.push({ path: policy.relative(file.path), line: index + 1, text });
+                results.push({ path: displayPath(file.path), line: index + 1, text });
               }
             });
           }

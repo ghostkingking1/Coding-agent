@@ -1,0 +1,12 @@
+{
+  "id": "add-math-tests",
+  "title": "Add edge-case tests for clamp",
+  "prompt": "Add Node.js built-in tests for clamp(value, min, max), covering below-range, above-range, in-range, and boundary values. Do not change clamp implementation.",
+  "fixture": "add-math-tests/fixture",
+  "verification": "add-math-tests/verification",
+  "baseCommit": "fixture-tree-v1:add-math-tests",
+  "fixtureDigest": "sha256:740895833fac9611feb97320a14c4e4c94d0a5d09052e2e18f1c3236a53e7271",
+  "environment": { "node": ">=22", "platform": "any" },
+  "limits": { "maxDurationMs": 120000, "maxSteps": 8 },
+  "diffRules": { "allowedPaths": ["clamp.mjs", "test/**"], "forbiddenPaths": ["verification/**"] }
+}

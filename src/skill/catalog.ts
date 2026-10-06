@@ -2,10 +2,11 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import matter from "gray-matter";
+import { parse as parseYaml } from "yaml";
 import { z } from "zod";
-import type { JsonObject, JsonSchema, ToolCapability } from "../agent/types.ts";
 import { WorkspacePolicy } from "../tools/security.ts";
-import type { LoadedSkill, SkillCatalogLike, SkillDescriptor, SkillMatch, SkillManifest, SkillResource, SkillSource, SkillCatalogOptions } from "./types.ts";
+import type { LoadedSkill, SkillCatalogLike, SkillDescriptor, SkillManifest, SkillResource, SkillSource, SkillCatalogOptions, SkillVerification } from "./types.ts";
 
 const manifestSchema = z.object({
   name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/),
@@ -24,7 +25,6 @@ const DEFAULTS = {
   maxContentChars: 32_000,
   maxResourceBytes: 128 * 1024,
   maxResources: 64,
-  maxMatches: 8,
 } as const;
 
 /** 受控、只读的 SKILL.md 目录；Skill 内容永远不会改变工具授权。 */
@@ -42,9 +42,8 @@ export class SkillCatalog implements SkillCatalogLike {
       maxContentChars: options.maxContentChars ?? DEFAULTS.maxContentChars,
       maxResourceBytes: options.maxResourceBytes ?? DEFAULTS.maxResourceBytes,
       maxResources: options.maxResources ?? DEFAULTS.maxResources,
-      maxMatches: options.maxMatches ?? DEFAULTS.maxMatches,
     };
-    for (const key of ["maxSkills", "maxFileBytes", "maxContentChars", "maxResourceBytes", "maxResources", "maxMatches"] as const) {
+    for (const key of ["maxSkills", "maxFileBytes", "maxContentChars", "maxResourceBytes", "maxResources"] as const) {
       const value = this.options[key];
       if (!Number.isInteger(value) || value < 1) throw new Error(`${key} must be a positive integer`);
     }
@@ -71,26 +70,29 @@ export class SkillCatalog implements SkillCatalogLike {
 
   list(): readonly SkillDescriptor[] { return [...this.descriptors]; }
 
-  match(request: string): readonly SkillMatch[] {
-    const tokens = tokenize(request);
-    if (!tokens.length) return [];
-    return this.descriptors
-      .filter((skill) => skill.valid)
-      .map((skill) => scoreSkill(skill, tokens))
-      .filter((match) => match.score > 0)
-      .sort((a, b) => b.score - a.score || sourceRank(a.skill.source) - sourceRank(b.skill.source) || a.skill.manifest.name.localeCompare(b.skill.manifest.name))
-      .slice(0, this.options.maxMatches);
+  async verify(name: string, source?: SkillSource, expectedDigest?: string): Promise<SkillVerification> {
+    const descriptor = this.findDescriptor(name, source);
+    const raw = await fs.readFile(descriptor.instructionPath, "utf8");
+    const currentDigest = digestText(raw);
+    return { skill: descriptor, currentDigest, matchesCatalogDigest: currentDigest === descriptor.digest && (!expectedDigest || currentDigest === expectedDigest) };
   }
 
   async read(name: string, source?: SkillSource): Promise<LoadedSkill> {
-    const candidates = this.descriptors.filter((descriptor) => descriptor.valid && descriptor.manifest.name === name && (!source || descriptor.source === source));
-    const descriptor = candidates.sort((a, b) => sourceRank(a.source) - sourceRank(b.source))[0];
-    if (!descriptor) throw new Error(`Skill not found or invalid: ${name}${source ? ` (${source})` : ""}`);
+    const descriptor = this.findDescriptor(name, source);
     const raw = await fs.readFile(descriptor.instructionPath, "utf8");
+    // 用同一次读取的数据计算摘要并解析，避免校验后再次读取形成 TOCTOU 窗口。
+    if (digestText(raw) !== descriptor.digest) throw new Error(`Skill digest changed after discovery: ${name}`);
     const content = parseSkillDocument(raw).content;
     const truncated = content.length > this.options.maxContentChars;
     const resources = await this.readResources(descriptor);
     return { descriptor, content: content.slice(0, this.options.maxContentChars), resources, truncated };
+  }
+
+  private findDescriptor(name: string, source?: SkillSource): SkillDescriptor {
+    const candidates = this.descriptors.filter((descriptor) => descriptor.valid && descriptor.manifest.name === name && (!source || descriptor.source === source));
+    const descriptor = candidates.sort((a, b) => sourceRank(a.source) - sourceRank(b.source))[0];
+    if (!descriptor) throw new Error(`Skill not found or invalid: ${name}${source ? ` (${source})` : ""}`);
+    return descriptor;
   }
 
   private async scanRoot(root: string, source: SkillSource, output: SkillDescriptor[], resolveCandidate: (path: string) => string): Promise<void> {
@@ -151,52 +153,35 @@ export class SkillCatalog implements SkillCatalogLike {
 
 function parseSkillDocument(raw: string): { frontmatter: Record<string, unknown>; content: string; diagnostics: string[] } {
   const diagnostics: string[] = [];
-  if (!raw.startsWith("---\n") && !raw.startsWith("---\r\n")) return { frontmatter: {}, content: raw, diagnostics: ["SKILL.md must start with YAML frontmatter"] };
-  const lines = raw.replace(/\r\n/g, "\n").split("\n");
-  const end = lines.indexOf("---", 1);
-  if (end < 0) return { frontmatter: {}, content: raw, diagnostics: ["YAML frontmatter is not terminated"] };
-  const frontmatter: Record<string, unknown> = {};
-  let currentArray: string | undefined;
-  for (const line of lines.slice(1, end)) {
-    if (!line.trim() || line.trim().startsWith("#")) continue;
-    const item = /^\s*-\s+(.+)$/.exec(line);
-    if (item && currentArray) { (frontmatter[currentArray] as string[]).push(item[1].trim().replace(/^['\"]|['\"]$/g, "")); continue; }
-    const pair = /^([A-Za-z][A-Za-z0-9_-]*)\s*:\s*(.*)$/.exec(line);
-    if (!pair) { diagnostics.push(`invalid frontmatter line: ${line.slice(0, 120)}`); continue; }
-    const [, key, value] = pair;
-    if (!value) { frontmatter[key] = []; currentArray = key; continue; }
-    currentArray = undefined;
-    try { frontmatter[key] = parseScalar(value); } catch (error) { diagnostics.push(error instanceof Error ? error.message : String(error)); }
+  const normalized = raw.replace(/\r\n/g, "\n");
+  if (!normalized.startsWith("---\n")) return { frontmatter: {}, content: raw, diagnostics: ["SKILL.md must start with YAML frontmatter"] };
+
+  // 先保留明确的终止检查，避免 gray-matter 将未闭合正文误当成 YAML 内容。
+  const lines = normalized.split("\n");
+  if (lines.findIndex((line, index) => index > 0 && line === "---") < 0) {
+    return { frontmatter: {}, content: raw, diagnostics: ["YAML frontmatter is not terminated"] };
   }
-  return { frontmatter, content: lines.slice(end + 1).join("\n").replace(/^\n/, ""), diagnostics };
+
+  try {
+    const parsed = matter(raw, {
+      engines: {
+        yaml: {
+          parse: (value: string): object => {
+            const result = parseYaml(value);
+            if (!result || typeof result !== "object" || Array.isArray(result)) throw new Error("frontmatter must be a YAML mapping");
+            return result as Record<string, unknown>;
+          },
+        },
+      },
+    });
+    return { frontmatter: parsed.data as Record<string, unknown>, content: parsed.content, diagnostics };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    diagnostics.push(`invalid YAML frontmatter: ${message}`);
+    return { frontmatter: {}, content: raw, diagnostics };
+  }
 }
 
-function parseScalar(value: string): string | boolean | number | null | string[] | JsonObject {
-  const text = value.trim();
-  if (text === "[]") return [];
-  if (text === "{}") return {};
-  if (text === "true") return true;
-  if (text === "false") return false;
-  if (text === "null") return null;
-  if (/^-?\d+(\.\d+)?$/.test(text)) return Number(text);
-  if ((text.startsWith("[") && text.endsWith("]")) || (text.startsWith("{") && text.endsWith("}"))) {
-    try { return JSON.parse(text) as string[] | JsonObject; } catch { throw new Error(`invalid JSON-like frontmatter value: ${text.slice(0, 100)}`); }
-  }
-  return text.replace(/^['"]|['"]$/g, "");
-}
-
-function scoreSkill(skill: SkillDescriptor, tokens: readonly string[]): SkillMatch {
-  const fields: Array<[string, string, number]> = [["name", skill.manifest.name, 6], ["description", skill.manifest.description, 2], ["trigger", (skill.manifest.triggers ?? []).join(" "), 4], ["tag", (skill.manifest.tags ?? []).join(" "), 3]];
-  let score = 0;
-  const reasons: string[] = [];
-  for (const [label, value, weight] of fields) {
-    const fieldTokens = tokenize(value);
-    const count = tokens.filter((token) => fieldTokens.includes(token)).length;
-    if (count) { score += count * weight; reasons.push(`${label} matched ${count} token(s)`); }
-  }
-  return { skill, score, reasons };
-}
-function tokenize(value: string): string[] { return [...new Set(value.toLocaleLowerCase().split(/[^\p{L}\p{N}]+/u).filter((token) => token.length > 1))]; }
 function sourceRank(source: SkillSource): number { return source === "repository" ? 0 : 1; }
 function digestText(value: string): string { return crypto.createHash("sha256").update(value).digest("hex"); }
 async function realDirectory(value: string): Promise<string | undefined> { try { const real = await fs.realpath(value); return (await fs.stat(real)).isDirectory() ? real : undefined; } catch { return undefined; } }

@@ -44,6 +44,8 @@ interface PatchJournal { readonly version: 1; readonly transactionId: string; re
 export interface PatchTransactionOptions {
   /** 测试和平台适配层可注入 rename；生产默认使用带 Windows 重试的实现。 */
   readonly rename?: (source: string, target: string) => Promise<void>;
+  /** 仅由 full 模式动态开启；普通模式仍拒绝工作区外路径。 */
+  readonly hostAccess?: boolean | (() => boolean);
 }
 
 export class PreparedOperationStaleError extends Error {
@@ -69,6 +71,7 @@ export type PatchInput = z.output<typeof patchInputSchema>;
 
 /** 创建一个先生成 diff、再由审批策略决定是否执行写入的 patch 工具。 */
 export function createPatchTool(policy: WorkspacePolicy, transactionOptions: PatchTransactionOptions = {}): Tool {
+  const useHostAccess = () => typeof transactionOptions.hostAccess === "function" ? transactionOptions.hostAccess() : transactionOptions.hostAccess === true;
   return defineTool({
     name: "apply_patch",
     description: "Preview and apply structured text replacements inside the workspace.",
@@ -76,30 +79,30 @@ export function createPatchTool(policy: WorkspacePolicy, transactionOptions: Pat
     inputSchema: patchInputSchema,
     modelInputSchema: applyPatchModelInputSchema,
     async preview(input, context) {
-      const plan = await planPatch(policy, input, context);
+      const plan = await planPatch(policy, input, context, useHostAccess());
       return { preview: plan.preview, files: plan.files } satisfies PatchPreview;
     },
     async prepare(input, context) {
-      const plan = await planPatch(policy, input, context);
+      const plan = await planPatch(policy, input, context, useHostAccess());
       return { operationId: `patch_${crypto.randomUUID()}`, preview: { preview: plan.preview, files: plan.files }, approvalDigest: patchPlanDigest(plan), payload: plan };
     },
     async executePrepared(operation, context) {
-      return executePatchPlan(policy, preparedPatch(operation), context, transactionOptions);
+      return executePatchPlan(policy, preparedPatch(operation), context, transactionOptions, useHostAccess());
     },
     async execute(input, context) {
-      const plan = await planPatch(policy, input, context);
-      return executePatchPlan(policy, plan, context, transactionOptions);
+      const plan = await planPatch(policy, input, context, useHostAccess());
+      return executePatchPlan(policy, plan, context, transactionOptions, useHostAccess());
     },
   });
 }
 
-async function planPatch(policy: WorkspacePolicy, input: PatchInput, context: ToolContext): Promise<PlannedPatch> {
+async function planPatch(policy: WorkspacePolicy, input: PatchInput, context: ToolContext, hostAccess = false): Promise<PlannedPatch> {
   const loadedFiles = new Map<string, { content: string; originalContent: string; originalHash: string; mode: number; relativePath: string; changes: number }>();
   const hunks: string[] = [];
 
   for (const change of input.changes) {
     throwIfAborted(context.signal);
-    const resolved = policy.resolveFile(change.path);
+    const resolved = hostAccess ? policy.resolveHostFile(change.path) : policy.resolveFile(change.path);
     /** 同一文件的多处修改基于内存中的最新内容串行规划，避免后续匹配读到旧文件。 */
     let existing = loadedFiles.get(resolved.path);
     if (!existing) {
@@ -129,16 +132,16 @@ async function planPatch(policy: WorkspacePolicy, input: PatchInput, context: To
   return { preview, files, writes, originals };
 }
 
-async function executePatchPlan(policy: WorkspacePolicy, plan: PlannedPatch, context: ToolContext, transactionOptions: PatchTransactionOptions): Promise<PatchResult> {
+async function executePatchPlan(policy: WorkspacePolicy, plan: PlannedPatch, context: ToolContext, transactionOptions: PatchTransactionOptions, hostAccess = false): Promise<PatchResult> {
   for (const original of plan.originals) {
-    const currentPath = policy.resolveFile(original.relativePath).path;
+    const currentPath = (hostAccess ? policy.resolveHostFile(original.path) : policy.resolveFile(original.relativePath)).path;
     const current = await fs.readFile(currentPath, "utf8");
     if (currentPath !== original.path || hashText(current) !== original.hash) {
       throw new PreparedOperationStaleError(`Prepared patch is stale for ${original.relativePath}`);
     }
   }
   for (const original of plan.originals) context.changeTracker?.recordBeforeWrite(original.path, original.relativePath, original.content);
-  await applyPatchTransaction(policy.root, plan.writes, transactionOptions);
+  await applyPatchTransaction(policy.root, plan.writes, transactionOptions, hostAccess);
   return { applied: true, preview: plan.preview, files: plan.files };
 }
 
@@ -157,7 +160,7 @@ function patchPlanDigest(plan: PlannedPatch): string {
   })).digest("hex");
 }
 
-async function applyPatchTransaction(workspaceRoot: string, writes: PlannedPatch["writes"], options: PatchTransactionOptions): Promise<void> {
+async function applyPatchTransaction(workspaceRoot: string, writes: PlannedPatch["writes"], options: PatchTransactionOptions, hostAccess = false): Promise<void> {
   const rename = options.rename ?? renameWithRetry;
   const transactionId = crypto.randomUUID();
   const entries: PatchJournalEntry[] = writes.map((write) => ({
@@ -225,7 +228,7 @@ async function rollbackJournal(journal: PatchJournal, rename: (source: string, t
   }
 }
 
-function validateJournal(journal: PatchJournal, workspaceRoot: string): void {
+function validateJournal(journal: PatchJournal, workspaceRoot: string, hostAccess = false): void {
   if (!journal || journal.version !== 1 || !UUID_PATTERN.test(journal.transactionId) || path.resolve(journal.workspaceRoot) !== path.resolve(workspaceRoot) || !Array.isArray(journal.entries)) {
     throw new Error("Invalid patch journal workspace");
   }
@@ -233,7 +236,7 @@ function validateJournal(journal: PatchJournal, workspaceRoot: string): void {
   for (const entry of journal.entries) {
     if (!entry || !["prepared", "backed_up", "applied"].includes(entry.state)) throw new Error("Invalid patch journal state");
     const relative = path.relative(workspaceRoot, entry.target);
-    if (!relative || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new Error("Invalid patch journal target");
+    if (!hostAccess && (!relative || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))) throw new Error("Invalid patch journal target");
     if (targets.has(path.resolve(entry.target))) throw new Error("Duplicate patch journal target");
     targets.add(path.resolve(entry.target));
     if (entry.temporary !== `${entry.target}.veil-tmp-${journal.transactionId}` || entry.backup !== `${entry.target}.veil-bak-${journal.transactionId}`) {

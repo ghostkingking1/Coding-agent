@@ -1,0 +1,12 @@
+{
+  "id": "round-cart-total",
+  "title": "Round cart totals to cents",
+  "prompt": "Fix cartTotal(items, taxRate) to sum item price * quantity, apply tax, and return a monetary total rounded to two decimal places. Do not mutate inputs.",
+  "fixture": "round-cart-total/fixture",
+  "verification": "round-cart-total/verification",
+  "baseCommit": "fixture-tree-v1:round-cart-total",
+  "fixtureDigest": "sha256:a80c73fd37a3605f2f6926baff896448181b987b453f1907f56e38a53e72472a",
+  "environment": { "node": ">=22", "platform": "any" },
+  "limits": { "maxDurationMs": 120000, "maxSteps": 8 },
+  "diffRules": { "allowedPaths": ["cart.mjs"], "forbiddenPaths": ["verification/**"] }
+}

@@ -1,5 +1,8 @@
 import crypto from "node:crypto";
-import type { ContextBudget, ContextCheckpoint, ContextDegradation, ContextManager, ContextResult, ContextStageResult, ContextSummary, Message, ModelUsage } from "./types.ts";
+import type { ContextBudget, ContextCheckpoint, ContextDegradation, ContextManager, ContextResult, ContextStageResult, ContextSummary, Message, ModelUsage, SummaryCacheStore } from "./types.ts";
+
+const SUMMARY_VERSION = "summary-v1";
+const COMPRESSION_STRATEGY_VERSION = "context-compaction-v1";
 
 export interface ContextManagerOptions {
   readonly messagesForSession?: (sessionId: string) => readonly Message[];
@@ -10,13 +13,14 @@ export interface ContextManagerOptions {
 
 interface IndexedMessage { readonly message: Message; readonly sourceIndexes: readonly number[]; }
 
-/** 只生成模型视图，不修改 Session 中的完整 transcript。 */
+/** 把活动上下文压缩成下一轮模型直接使用的状态；原始 transcript 不作为恢复源。 */
 export class DefaultContextManager implements ContextManager {
   private readonly options: ContextManagerOptions;
   private calibrationFactor = 1;
   /** 摘要按完整源消息指纹缓存；同一历史前缀在后续请求中绝不重复摘要。 */
   private readonly summaryCache = new Map<string, string>();
   private readonly restoredSegments = new Map<string, readonly ContextSummary[]>();
+  private readonly checkpointVersions = new Map<string, number>();
   constructor(options: ContextManagerOptions = {}) { this.options = options; }
 
   estimate(messages: readonly Message[]): number {
@@ -46,7 +50,7 @@ export class DefaultContextManager implements ContextManager {
     return (await this.compact(source, { maxInputTokens: 32_000, recentTurns: this.options.recentTurns ?? 10, maxToolOutputTokens: this.options.maxToolOutputTokens ?? 4_000 })).messages;
   }
 
-  async compact(messages: readonly Message[], budget: number | ContextBudget): Promise<ContextResult> {
+  async compact(messages: readonly Message[], budget: number | ContextBudget, persistentCache?: SummaryCacheStore): Promise<ContextResult> {
     const limit = typeof budget === "number" ? budget : budget.maxInputTokens;
     if (!Number.isInteger(limit) || limit < 1) throw new Error("context budget must be a positive integer");
     const thresholdRatio = typeof budget === "number" ? 1 : budget.compactThresholdRatio ?? 0.75;
@@ -83,7 +87,7 @@ export class DefaultContextManager implements ContextManager {
     const retainedIndexes = new Set(retained.flatMap(({ sourceIndexes }) => sourceIndexes));
     const dropped = view.filter(({ message, sourceIndexes }) => message.role !== "system" && !sourceIndexes.some((index) => retainedIndexes.has(index)));
     if (dropped.length > 0) {
-      const summaryContent = await this.makeSummary(dropped.map(({ message }) => message));
+      const summaryContent = await this.makeSummary(dropped.map(({ message }) => message), persistentCache);
       const summary: ContextSummary = { summaryId: `sum_${crypto.randomUUID()}`, sourceMessageIndexes: dropped.flatMap(({ sourceIndexes }) => sourceIndexes), content: summaryContent };
       summaries.push(summary);
       view = insertSummary(system, retained, { sourceIndexes: dropped.flatMap(({ sourceIndexes }) => sourceIndexes), message: { role: "assistant", content: `[历史摘要 ${summary.summaryId}]\n${summaryContent}` } });
@@ -122,35 +126,56 @@ export class DefaultContextManager implements ContextManager {
     };
   }
 
-  private async makeSummary(messages: readonly Message[]): Promise<string> {
-    const key = summaryKey(messages);
+  private async makeSummary(messages: readonly Message[], persistentCache?: SummaryCacheStore): Promise<string> {
+    const sourceHash = summaryKey(messages);
+    const key = versionedSummaryKeyFromHash(sourceHash);
     const cached = this.summaryCache.get(key);
     if (cached !== undefined) return cached;
+    if (persistentCache) {
+      try {
+        const persisted = await persistentCache.getSummaryCache(key);
+        if (persisted && persisted.sourceHash === sourceHash && persisted.summaryVersion === SUMMARY_VERSION && persisted.compressionStrategyVersion === COMPRESSION_STRATEGY_VERSION) {
+          this.summaryCache.set(key, persisted.content);
+          return persisted.content;
+        }
+      } catch { /* 缓存不可用不能阻断摘要，checkpoint 仍是独立恢复状态。 */ }
+    }
     let summary: string | undefined;
     try { if (this.options.summarize) summary = await this.options.summarize(messages); } catch { /* 摘要服务失败时使用本地确定性摘要。 */ }
     summary ??= messages.map((message) => `${message.role}: ${message.content.slice(0, 240)}`).join("\n");
     this.summaryCache.set(key, summary);
+    if (persistentCache) {
+      try {
+        await persistentCache.saveSummaryCache({ cacheKey: key, sourceHash, summaryVersion: SUMMARY_VERSION, compressionStrategyVersion: COMPRESSION_STRATEGY_VERSION, content: summary, createdAt: new Date().toISOString() });
+      } catch { /* 摘要已可用；缓存写入失败只影响后续性能。 */ }
+    }
     return summary;
   }
 
   async exportCheckpoint(sessionId: string, messages: readonly Message[], budget: ContextBudget = { maxInputTokens: 32_000, recentTurns: this.options.recentTurns ?? 10, maxToolOutputTokens: this.options.maxToolOutputTokens ?? 4_000 }): Promise<ContextCheckpoint | undefined> {
     const result = await this.compact(messages, budget);
     const previous = this.restoredSegments.get(sessionId) ?? [];
-    if (result.summaries.length === 0 && previous.length === 0) return undefined;
     const coveredThroughSequence = result.summaries.length > 0
       ? Math.max(...result.summaries.flatMap((summary) => summary.sourceMessageIndexes))
-      : Math.max(...previous.flatMap((summary) => summary.sourceMessageIndexes));
+      : previous.length > 0
+        ? Math.max(...previous.flatMap((summary) => summary.sourceMessageIndexes))
+        : Math.max(-1, result.messages.length - 1);
     const segments = [...previous, ...result.summaries].filter((segment, index, all) => all.findIndex((candidate) => candidate.summaryId === segment.summaryId || JSON.stringify(candidate.sourceMessageIndexes) === JSON.stringify(segment.sourceMessageIndexes)) === index);
     const checkpoint: ContextCheckpoint = {
       sessionId,
+      version: (this.checkpointVersions.get(sessionId) ?? 0) + 1,
+      ...(this.checkpointVersions.has(sessionId) ? { parentVersion: this.checkpointVersions.get(sessionId)! } : {}),
+      summaryVersion: SUMMARY_VERSION,
+      compressionStrategyVersion: COMPRESSION_STRATEGY_VERSION,
       coveredThroughSequence,
-      sourcePrefixHash: prefixHash(messages, Math.min(coveredThroughSequence, messages.length - 1)),
+      sourcePrefixHash: prefixHash(result.messages, Math.min(coveredThroughSequence, result.messages.length - 1)),
       summarySegments: segments,
       retainedTailStart: coveredThroughSequence + 1,
       resumeMessages: result.messages,
       sourceMessageCount: messages.length,
       updatedAt: new Date().toISOString(),
     };
+    this.checkpointVersions.set(sessionId, checkpoint.version!);
     this.restoredSegments.set(sessionId, checkpoint.summarySegments);
     return checkpoint;
   }
@@ -159,17 +184,19 @@ export class DefaultContextManager implements ContextManager {
     if (checkpoint.resumeMessages && checkpoint.sourceMessageCount !== undefined) {
       for (const segment of checkpoint.summarySegments) {
         const source = segment.sourceMessageIndexes.map((index) => messages[index]).filter((message): message is Message => message !== undefined);
-        if (source.length === segment.sourceMessageIndexes.length) this.summaryCache.set(summaryKey(source), segment.content);
+        if (source.length === segment.sourceMessageIndexes.length) this.summaryCache.set(versionedSummaryKey(source), segment.content);
       }
       this.restoredSegments.set(checkpoint.sessionId, checkpoint.summarySegments);
+      this.checkpointVersions.set(checkpoint.sessionId, checkpoint.version ?? 1);
       return true;
     }
     if (checkpoint.coveredThroughSequence >= messages.length || prefixHash(messages, checkpoint.coveredThroughSequence) !== checkpoint.sourcePrefixHash) return false;
     for (const segment of checkpoint.summarySegments) {
       const source = segment.sourceMessageIndexes.map((index) => messages[index]).filter((message): message is Message => message !== undefined);
-      if (source.length === segment.sourceMessageIndexes.length) this.summaryCache.set(summaryKey(source), segment.content);
+      if (source.length === segment.sourceMessageIndexes.length) this.summaryCache.set(versionedSummaryKey(source), segment.content);
     }
     this.restoredSegments.set(checkpoint.sessionId, checkpoint.summarySegments);
+    this.checkpointVersions.set(checkpoint.sessionId, checkpoint.version ?? 1);
     return true;
   }
 }
@@ -177,6 +204,10 @@ export class DefaultContextManager implements ContextManager {
 function summaryKey(messages: readonly Message[]): string {
   return crypto.createHash("sha256").update(JSON.stringify(messages)).digest("hex");
 }
+function versionedSummaryKey(messages: readonly Message[]): string {
+  return versionedSummaryKeyFromHash(summaryKey(messages));
+}
+function versionedSummaryKeyFromHash(sourceHash: string): string { return `${sourceHash}:${SUMMARY_VERSION}:${COMPRESSION_STRATEGY_VERSION}`; }
 function prefixHash(messages: readonly Message[], sequence: number): string { return crypto.createHash("sha256").update(JSON.stringify(messages.slice(0, sequence + 1))).digest("hex"); }
 
 function cloneMessage(message: Message): Message {

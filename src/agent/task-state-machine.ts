@@ -15,18 +15,39 @@ export class TaskStateMachine {
   private readonly evidenceValue: VerificationEvidence[] = [];
   private readonly onTransition?: (from: TaskState, to: TaskState, reason: string) => void | Promise<void>;
 
-  constructor(policy: VerificationPolicy, onTransition?: (from: TaskState, to: TaskState, reason: string) => void | Promise<void>) {
+  constructor(policy: VerificationPolicy, onTransition?: (from: TaskState, to: TaskState, reason: string) => void | Promise<void>, restored?: VerificationSummary, restoredState?: TaskState) {
     const maxRepairAttempts = policy.maxRepairAttempts ?? DEFAULT_MAX_REPAIR_ATTEMPTS;
     if (!Number.isInteger(maxRepairAttempts) || maxRepairAttempts < 1) throw new Error("maxRepairAttempts must be a positive integer");
     this.policy = { ...policy, maxRepairAttempts };
     this.onTransition = onTransition;
+    if (restored) this.restore(restored, restoredState);
   }
 
   get state(): TaskState { return this.stateValue; }
   get isBlocked(): boolean { return this.stateValue === "blocked"; }
   get requiresVerification(): boolean { return this.writeObservedValue && !this.verificationPassedValue; }
 
-  async start(): Promise<void> { await this.transition("working", "task started"); }
+  async start(): Promise<void> {
+    // 恢复状态已经包含此前的事实，不能再次从 received 强行覆盖它。
+    if (this.stateValue !== "received") return;
+    await this.transition("working", "task started");
+  }
+
+  /** 从 checkpoint 恢复验证事实；只恢复已记录的数据，不凭空生成成功证据。 */
+  private restore(summary: VerificationSummary, restoredState?: TaskState): void {
+    this.writeObservedValue = summary.writeObserved;
+    this.verificationPassedValue = summary.verificationPassed;
+    this.verifierToolValue = summary.verifierTool;
+    this.verificationAttemptsValue = summary.verificationAttempts;
+    this.repairAttemptsValue = summary.repairAttempts;
+    this.statusValue = summary.status;
+    this.evidenceValue.push(...summary.evidence);
+    if (restoredState) this.stateValue = restoredState;
+    else if (summary.writeObserved && summary.verificationPassed) this.stateValue = "verifying";
+    else if (summary.writeObserved && summary.repairAttempts > 0) this.stateValue = "repairing";
+    else if (summary.writeObserved) this.stateValue = "verifying";
+    else this.stateValue = "working";
+  }
 
   async beginWork(): Promise<void> {
     if (this.stateValue === "repairing") await this.transition("working", "repair attempt started");

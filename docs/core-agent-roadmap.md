@@ -9,7 +9,7 @@ Sandbox V2（基础能力已落地）
   -> OpenAI Responses（已完成）
   -> 本地 MCP tools（已完成）
   -> 仓库指令加载与 Git 感知（已完成）
-  -> 任务状态机与强制验证闭环（下一阶段）
+  -> 任务状态机与强制验证闭环（run 级已落地，task 级进行中）
   -> 持久任务恢复 CLI/API
   -> Skills
 ```
@@ -104,11 +104,17 @@ Agent 在修改前能说明仓库规则和 Git 状态，结束时能准确报告
 
 实现位置：`src/repository/instructions.ts`、`src/repository/git.ts`、`src/repository/tools.ts`。CLI 注入受限 `AGENTS.md` 上下文并注册只读仓库工具；Git 查询固定使用无 shell 的只读 argv，运行结果交叉标记用户已有修改、Agent 修改和重叠文件。
 
-## 阶段五：任务状态机与强制验证闭环（下一步，P0）
+## 阶段五：任务状态机与强制验证闭环（run 级已完成，task 级进行中）
 
 ### 目标
 
 任务是否完成由状态和验证证据决定，而不是由模型单方面声明。
+
+### 当前状态
+
+`Agent` run 已接入 `TaskStateMachine`：写入后进入验证态，`run_tests` 失败可进入修复态，未获得通过证据不能以普通 `completed` 收尾；验证摘要和状态会写入 run checkpoint，恢复时继续保留验证事实。`TaskOrchestrator` 已支持条件式 Planner/Execute/Review/Reflection 路由，以及 Review 要求修复后的 Execute -> Review 重试闭环。
+
+仍未完成的是独立于 run 的 Task 聚合根、Task SQLite 表、用户批准/豁免记录和任务级 CLI/API；因此本阶段只能标记为部分完成，不能宣称完整的任务产品化闭环。
 
 ### 状态
 
@@ -203,7 +209,7 @@ codex/skills-foundation
 
 | 优先级 | 交付 | 主要验收 |
 | --- | --- | --- |
-| P0 | Task 状态机与强制验证闭环 | 非法状态拒绝；变更后必须验证；失败可修复并留证据 |
+| P0 | Task 聚合根与任务级验证持久化 | 任务独立于 run；非法状态拒绝；验证、豁免和修复历史可查询 |
 | P1 | 任务恢复 CLI/API | 列出、查看、取消、恢复；重新校验 workspace、Git 基线、Helper 和 MCP 身份 |
 | P1 | Sandbox 纵深补强 | Linux `/proc`/设备和 Windows 网络/注册表策略有真实逃逸回归 |
 | P2 | Skills 基础 | manifest、版本、来源、依赖和 Capability/Approval 继承 |

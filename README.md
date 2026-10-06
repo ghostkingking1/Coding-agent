@@ -12,7 +12,7 @@ npm test
 npm start -- "请检查这个项目"
 ```
 
-开发时可使用 `npm start -- "请求"`；不带参数时会在 TTY 中进入持续对话 REPL。安装全局命令后使用 `veil "请求"`，当前终端目录会作为 workspace；输入 `veil` 可进入持续对话，输入 `exit` 或 `quit` 退出。非 TTY 环境必须显式提供请求参数。
+开发时可使用 `npm start -- "请求"`；不带参数时会在 TTY 中进入持续对话 REPL。安装全局命令后使用 `veil "请求"`，当前终端目录会作为 workspace；输入 `veil` 可进入持续对话，输入 `exit` 或 `quit` 退出。交互式 Session 默认持久化到当前 workspace 的 `.veil/sessions.db`，下次在同一 workspace 启动会自动加载最近的 active Session；可用 `CODING_AGENT_SESSION_DB` 覆盖数据库路径。非 TTY 环境必须显式提供请求参数。
 
 全局安装：
 
@@ -22,7 +22,23 @@ veil --help
 veil "分析当前目录并运行测试"
 ```
 
-启动 `veil` 不要求模型配置：CLI 会先立即进入交互主界面；提交第一条普通请求时，才校验真实模型配置。未配置时该请求会明确报错，不会降级为模拟模型。
+启动 `veil` 不要求模型配置：CLI 会先立即进入交互主界面；提交第一条普通请求时，才校验真实模型配置。未配置时该请求会明确报错，不会降级为模拟模型。TTY 中可使用 `/cancel` 取消当前请求；重新启动时会检查过期 run 并保留可恢复 checkpoint。
+
+## 工作模式与审批
+
+REPL 默认使用 `execute + ask`，保持原有行为。所有模式通过同一个命令切换：
+
+```text
+/mode plan
+/mode execute
+/mode execute 1
+/mode execute full
+/mode execute normal
+```
+
+`plan` 只向模型开放读取、搜索和专用 `write_plan`；计划保存到 `.veil/plans/<task-id>.md`，并在同目录 SQLite 索引中记录版本、状态和 hash。计划正文必须包含任务目标、编号执行计划、完成标准、边界情况、不应修改的内容和测试方式，同时声明允许的 capability、工具、路径和精确命令。`/mode execute` 会自动执行唯一的未完成计划；存在多个计划时先列出编号，再用 `/mode execute <number>` 选择。计划外操作会被工具层拒绝并进入 `needs-plan-update`。
+
+普通副作用工具在执行前提供三个选择：本次允许、本次会话允许、拒绝。会话授权绑定“工具名 + 完整参数 + prepared operation digest”，参数改变后必须重新审批，且授权不会跨 CLI Session。`/mode execute full` 仅允许在 TTY 中通过显式警告确认开启；它移除 workspace 边界和本地 sandbox，允许宿主机路径与网络，但仍受操作系统账户权限、工具注册、超时、输出上限和进程回收约束。`/mode execute` 不会退出 full，必须使用 `/mode execute normal` 显式恢复普通访问。
 
 ## 真实模型
 
@@ -77,6 +93,12 @@ docs/
 - [开发协作规范](AGENTS.md)：分支、测试、安全和提交要求。
 
 ## 功能更新日志
+
+### 2026-09-22
+
+- 增加 plan/execute 工作模式、可恢复计划状态机、Markdown + SQLite 双重计划记录，以及计划 scope 的工具层强制校验。
+- 增加 once/session/deny 三档副作用审批；session grant 精确绑定工具、参数和 prepared operation digest。
+- 增加仅限 TTY 显式确认的 full access，并在退出 full 后动态撤回宿主机路径、命令和网络能力。
 
 ### 2026-09-12
 

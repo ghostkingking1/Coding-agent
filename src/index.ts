@@ -1,5 +1,7 @@
 export { Agent } from "./agent/agent.ts";
 export { TaskStateMachine } from "./agent/task-state-machine.ts";
+export { AgentRouter, TaskOrchestrator, roleInput, parseReviewProtocol, parseReflectionProtocol, RoleProtocolError } from "./agent/agent-router.ts";
+export { WorkModeController, PlanStore, createPlanTool, approvalKey, planScopeViolation, PlanIntegrityError, PlanScopeViolationError } from "./agent/work-modes.ts";
 export { DefaultContextManager, createDeterministicContextManager } from "./agent/context-manager.ts";
 export { ToolOutputStore } from "./agent/tool-output-store.ts";
 export { Session } from "./agent/session.ts";
@@ -7,6 +9,10 @@ export { SessionManager } from "./agent/session-manager.ts";
 export { SqliteSessionStore } from "./agent/sqlite-session-store.ts";
 export { RunChangeTracker, cleanupStaleBaselineDirectories } from "./agent/run-diff.ts";
 export { WorkspaceCheckpointManager } from "./agent/workspace-checkpoint.ts";
+export { RecoveryPointCoordinator } from "./agent/recovery-point.ts";
+export { runBenchmark } from "./benchmark/runner.ts";
+export { NodeModuleBenchmarkVerifier } from "./benchmark/node-verifier.ts";
+export { createSandboxedBenchmarkRuntime } from "./benchmark/runtime.ts";
 export { ToolRegistry } from "./tools/tool-registry.ts";
 export { ApprovalDeniedError, DefaultApprovalPolicy, SecurityPolicy, WorkspacePolicy, WorkspaceSecurityError } from "./tools/security.ts";
 export { defineTool, ToolInputValidationError, validateToolInput } from "./tools/tool-schema.ts";
@@ -80,8 +86,13 @@ export type {
   CheckpointRecord,
   CheckpointSink,
 } from "./agent/types.ts";
+export type { AgentRole, AgentRouteDecision, AgentRoleHandlers, AgentRoutingPolicy, AgentRoutingSignals, ExecutionArtifact, PlanArtifact, ReflectionArtifact, ReviewArtifact, ReviewFinding, TaskContext, TaskEvent, TaskOrchestratorOptions, TaskOrchestratorResult } from "./agent/agent-router.ts";
 export type { RunDiff, RunDiffFile } from "./agent/run-diff.ts";
+export type { ExecutionMode, AccessMode, ApprovalDecision, WorkModeState, PlanStatus, PlanDocument, PlanScope, PlanCommandScope } from "./agent/work-modes.ts";
+export { PlanTaskStateMachine } from "./agent/work-modes.ts";
 export type { RollbackOptions, RollbackResult, WorkspaceCheckpoint, WorkspaceCheckpointFile, WorkspaceCheckpointManagerOptions } from "./agent/workspace-checkpoint.ts";
+export type { RecoveryPoint, RecoveryPointRef, RecoveryPointStatus, WorkspaceRevision, RecoveryPointCoordinatorOptions } from "./agent/recovery-point.ts";
+export type { BenchmarkTask, BenchmarkRuntime, BenchmarkRuntimeContext, BenchmarkVerifier, BenchmarkCheck, BenchmarkTaskResult, BenchmarkSummary, BenchmarkRunnerOptions } from "./benchmark/types.ts";
 export type { FailedRun, RunResult, RunStatus, SessionResult, SessionRun, SessionStatus, SessionOptions } from "./agent/session.ts";
 export type { CompleteRunInput, PersistedRunStatus, PersistedSessionStatus, SessionRecord, SessionStore, StoredMessage, StoredRunRecord } from "./agent/session-store.ts";
 export type { ToolDefinition } from "./tools/tool-schema.ts";
@@ -94,6 +105,7 @@ export type { ModelRuntimeConfig, ModelRuntimeOptions, OpenAICompatibleRuntimeCo
 export type { ModelRouteDecision, ModelRouterOptions } from "./model/model-router.ts";
 export type { PatchChange, PatchFileResult, PatchInput, PatchPreview, PatchResult } from "./tools/patch-tools.ts";
 export type { RunCommandInput, RunCommandPreview, RunCommandResult, RunCommandToolOptions } from "./tools/command-tools.ts";
+export { ModeSwitchingSandboxBackend } from "./tools/sandbox.ts";
 export type { ExecutionRequest, ExecutionNetworkPolicy, ExecutionNetworkPolicyInput, SandboxBackend, SandboxCapabilities, SandboxCapability, SandboxSpawnRequest } from "./tools/sandbox.ts";
 export { ControlledNetworkProxy } from "./tools/network-proxy.ts";
 export { createManagedNetworkCommandTool } from "./tools/network-command.ts";
@@ -108,5 +120,6 @@ export type { McpBootstrapRequest, McpRuntimeOptions, McpRuntimeServerStatus } f
 export type { OAuthCredential, CredentialStore, OAuthAuthorizationServerMetadata, OAuthProtectedResourceMetadata, BrowserLauncher, OAuthLoginOptions, OAuthTokenResponse } from "./tools/mcp-auth.ts";
 export type { McpConfigFile, McpConfigLoadOptions } from "./tools/mcp-config.ts";
 export type { RepositoryInstructionOptions, RepositoryInstructionSource, RepositoryInstructions } from "./repository/instructions.ts";
-export type { SkillCatalogOptions, SkillCatalogLike, SkillDescriptor, SkillDraft, SkillMatch, SkillManifest, SkillResource, SkillSource, LoadedSkill, SkillCaptureInput } from "./skill/index.ts";
+export type { SkillCatalogOptions, SkillCatalogLike, SkillDescriptor, SkillManifest, SkillResource, SkillSource, LoadedSkill, SkillCaptureInput, SkillVerification } from "./skill/index.ts";
 export type { GitChangeReport, GitCommitPreview, GitFileState, GitFileStatus, GitStatusSummary } from "./repository/git.ts";
+export type { GitRecoveryTree } from "./repository/git.ts";

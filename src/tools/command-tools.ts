@@ -24,12 +24,14 @@ export interface RunCommandToolOptions {
   /** 允许透传给子进程的环境变量名称。 */
   readonly allowedEnv?: readonly string[];
   readonly sandbox?: SandboxBackend;
-  readonly requireOsIsolation?: boolean;
+  readonly requireOsIsolation?: boolean | (() => boolean);
   readonly cpuTimeMs?: number;
   readonly memoryBytes?: number;
   readonly maxProcesses?: number;
   /** 本地策略允许的联网范围；未配置时模型只能使用 network.off。 */
   readonly allowedNetwork?: ExecutionNetworkPolicy;
+  /** full 模式下允许使用宿主机 cwd；函数形式使 /mode execute normal 立即收紧边界。 */
+  readonly hostAccess?: boolean | (() => boolean);
 }
 
 /** run_command 审批预览，不包含环境变量值。 */
@@ -73,11 +75,12 @@ interface NormalizedRunCommandOptions {
   readonly maxStderrBytes: number;
   readonly allowedEnv: readonly string[];
   readonly sandbox: SandboxBackend;
-  readonly requireOsIsolation: boolean;
+  readonly requireOsIsolation: boolean | (() => boolean);
   readonly cpuTimeMs: number;
   readonly memoryBytes: number;
   readonly maxProcesses: number;
   readonly allowedNetwork?: ExecutionNetworkPolicy;
+  readonly hostAccess: boolean | (() => boolean);
 }
 
 interface PlannedCommand {
@@ -120,7 +123,7 @@ const runCommandInputSchema = z.object({
   timeoutMs: z.number().int().min(1).optional(),
   env: envInputSchema.default({}),
   network: z.object({
-    mode: z.literal("off").or(z.literal("allowlist")),
+    mode: z.literal("off").or(z.literal("allowlist")).or(z.literal("full")),
     hosts: z.array(z.string().min(1)).max(64).optional(),
     ports: z.array(z.number().int().min(1).max(65535)).max(32).optional(),
   }).default({ mode: "off" }),
@@ -189,17 +192,19 @@ function normalizeOptions(options: RunCommandToolOptions): NormalizedRunCommandO
     memoryBytes,
     maxProcesses,
     allowedNetwork: options.allowedNetwork ? canonicalNetworkPolicy(options.allowedNetwork) : undefined,
+    hostAccess: options.hostAccess ?? false,
   };
 }
 
 function planCommand(policy: WorkspacePolicy, options: NormalizedRunCommandOptions, input: ParsedRunCommandInput): PlannedCommand {
-  const cwdPath = policy.resolveDirectory(input.cwd);
+  const hostAccess = typeof options.hostAccess === "function" ? options.hostAccess() : options.hostAccess;
+  const cwdPath = hostAccess ? policy.resolveHostDirectory(input.cwd) : policy.resolveDirectory(input.cwd);
   const timeoutMs = input.timeoutMs ?? options.defaultTimeoutMs;
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > options.maxTimeoutMs) {
     throw new Error(`timeoutMs must be an integer from 1 to ${options.maxTimeoutMs}`);
   }
   const env = buildEnvironment(options.allowedEnv, input.env);
-  const network = normalizeRequestedNetwork(input.network, options.allowedNetwork);
+  const network = normalizeRequestedNetwork(input.network, options.allowedNetwork, hostAccess === true);
   if (network.mode === "allowlist") injectProxyEnvironment(env, network);
   const envKeys = Object.keys(env).sort((a, b) => a.localeCompare(b));
   const spawnPlan = planSpawnInput(input.command, input.args, cwdPath, env);
@@ -221,11 +226,12 @@ function planCommand(policy: WorkspacePolicy, options: NormalizedRunCommandOptio
     filesystemWriteHint: true,
   };
   const policyDecision = decideSandboxPolicy(request, options.sandbox.capabilities.capabilities);
-  const required: import("./sandbox.ts").SandboxCapability[] = options.sandbox.capabilities.backend === "process" && !options.requireOsIsolation
+  const requireOsIsolation = typeof options.requireOsIsolation === "function" ? options.requireOsIsolation() : options.requireOsIsolation;
+  const required: import("./sandbox.ts").SandboxCapability[] = options.sandbox.capabilities.backend === "process" && !requireOsIsolation
     ? ["process.spawn", ...(options.maxProcesses > 1 ? ["process-tree" as const] : [])]
     : [...policyDecision.requiredCapabilities];
-  if (options.requireOsIsolation) required.push("os.isolation");
-  const hostBackend = options.sandbox.capabilities.backend === "process" && !options.requireOsIsolation;
+  if (requireOsIsolation) required.push("os.isolation");
+  const hostBackend = options.sandbox.capabilities.backend === "process" && !requireOsIsolation;
   if (!policyDecision.allowed && !hostBackend) {
     throw new SandboxUnavailableError(policyDecision.reason ?? "Sandbox policy rejected execution");
   }
@@ -275,9 +281,14 @@ function preparedCommand(operation: PreparedToolOperation): PlannedCommand {
 function normalizeRequestedNetwork(
   input: ParsedRunCommandInput["network"] | undefined,
   allowed: ExecutionNetworkPolicy | undefined,
+  hostAccess: boolean,
 ): ExecutionNetworkPolicy {
   // 部分内部工具会直接复用 preview/execute；缺省值仍必须保持为 fail-closed 的断网模式。
   if (!input || input.mode === "off") return { mode: "off" };
+  if (input.mode === "full") {
+    if (!hostAccess || !allowed || allowed.mode !== "full") throw new Error("Unrestricted network access requires full access mode");
+    return { mode: "full" };
+  }
   if (!allowed || allowed.mode !== "allowlist") {
     throw new Error("Network access is not enabled by local sandbox policy");
   }

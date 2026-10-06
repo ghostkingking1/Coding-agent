@@ -50,7 +50,7 @@
 
 ## 7. 持久化 / 审计
 
-原始消息由 Session 持久化；压缩后的模型视图不覆盖原始消息。`ContextResult.stages`、`degradation`、provider usage 校准和摘要结果会随运行事件及 context checkpoint 保存，便于恢复和诊断。
+Transcript（SQLite `messages`）始终保留完整原始消息；compaction 只替换 Session 内存中的 ContextState，不覆盖 Transcript。有效的 ContextCheckpoint 保存模型视图、稳定 Transcript 游标和版本元数据。恢复优先读取 checkpoint 并只拼接游标后的增量；旧版、版本不兼容或损坏时回退读取完整 Transcript。`ContextResult.stages`、`degradation` 和摘要结果仍用于运行诊断。
 
 ## 8. 安全边界
 
@@ -64,7 +64,7 @@
 
 ## 10. 当前边界
 
-**已实现**确定性估算、分阶段压缩、输出 artifact、context checkpoint 和摘要缓存；**部分实现**摘要质量和 token 估算精度；**后续计划**是接入更准确的 provider tokenizer、总体 deadline 和跨设备上下文恢复。
+**已实现**确定性估算、分阶段压缩、输出 artifact、版本化 context checkpoint、checkpoint 恢复后的增量拼接及 ContextState 替换；SummaryCache 独立存入 SQLite，按源消息 hash、摘要版本和压缩策略版本命中，最多保留最近 1000 条。缓存读取/写入失败不影响摘要生成或 checkpoint 恢复。**部分实现**多次压缩的摘要质量和 token 估算精度；**后续计划**是接入更准确的 provider tokenizer、总体 deadline 和跨设备上下文恢复。
 
 ## 11. 相关测试
 

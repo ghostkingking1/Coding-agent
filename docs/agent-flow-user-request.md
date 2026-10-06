@@ -163,7 +163,7 @@ startRun
        更新 sessions.updated_at
 ```
 
-失败路径使用 `failRun` 保存错误和结束时间。进程退出或 lease 过期时，running run 会被标记为 `interrupted`。恢复读取已提交的 `messages`、checkpoint 和幂等工具结果，不会盲目重放已完成的副作用；任务级恢复入口仍在路线图中。
+失败路径使用 `failRun` 保存错误和结束时间。进程退出或 lease 过期时，running run 会被标记为 `interrupted`。恢复读取已提交的 `messages`、checkpoint 和幂等工具结果，不会盲目重放已完成的副作用；CLI 启动时会显式接管过期 run，使其 checkpoint 可通过 `/resume` 继续；任务级恢复入口仍在路线图中。
 
 当前 SQLite 结构包含：
 
@@ -171,7 +171,7 @@ startRun
 - `runs`：每次请求的输入、状态、最终文本、错误、结果 JSON 以及 owner/lease 信息。
 - `messages`：Session 内按 `sequence` 排序的完整消息；assistant tool calls 和 tool 关联字段分别保存。
 - `schema_migrations`：数据库 schema 版本。
-- `checkpoints` / `context_checkpoints`：运行阶段、消息游标、上下文摘要和可恢复状态。
+- `checkpoints`：统一保存运行阶段、活动上下文、上下文摘要和工具输出 JSON；旧 `context_checkpoints` 已在 schema v9 合并迁移。
 - `audit_events`：按序保存运行、模型尝试/重试、流式完成、工具批次和 sandbox 结果的受限审计事件。
 
 运行事件包括 `model_started`、`tool_requested`、`tool_completed`、`tool_failed`、`run_finished` 和 `run_failed`，既可通过回调实时消费，也可追加到 `audit_events`。
@@ -191,7 +191,7 @@ startRun
 ## 9. 设计原因
 
 - **模型与 Agent 分离**：统一 `ModelClient` 契约，使 OpenAI-compatible 模型和测试替身共享同一执行循环；生产 CLI 不再包含 EchoModel 模拟降级。
-- **完整 transcript 与模型视图分离**：压缩上下文不会破坏恢复、审计和工具调用关联所需的原始消息。
+- **原始 transcript 与活动上下文分离**：`messages` 只作为审计归档，统一 `checkpoints` 表中 `checkpoint_kind='context'` 的 `context_json` 才是模型和恢复的唯一输入；压缩后不再把归档尾部重新拼回上下文。
 - **工具统一进入 ToolRegistry**：把名称查找、输入校验和授权顺序固定下来，避免某个调用路径绕过安全策略。
 - **副作用先预览后审批**：用户可以在文件写入、命令执行前看到即将发生的操作，审批拒绝时没有副作用。
 - **失败结果回传模型**：单个工具失败不会立即丢失整个对话，模型可以根据错误继续修复；但 Session 不提交失败 run 的部分上下文，防止失败状态污染后续运行。

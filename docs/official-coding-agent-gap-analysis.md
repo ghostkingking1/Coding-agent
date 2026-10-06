@@ -6,7 +6,7 @@
 
 ## 结论
 
-当前项目已具备受限本地 coding 闭环：`user -> model -> tool calls -> tool results -> model`。它包含工作区边界校验、读取/patch/命令/测试工具、输入 schema、审批、资源限制、OpenAI-compatible Chat/Responses adapter、模型网络审批、流式事件、有限重试、上下文预算、checkpoint/恢复、持久审计、MCP stdio、仓库指令和 Git 只读上下文，以及 Agent run diff 汇总。已用真实 OpenAI-compatible 模型完成一次隔离仓库验收。它仍不是产品级 coding agent：任务级强制验证、Anthropic adapter、精细网络策略、完整平台纵深隔离、Skills 和多会话任务接口仍未完成。
+当前项目已具备受限本地 coding 闭环：`user -> model -> tool calls -> tool results -> model`。它包含工作区边界校验、读取/patch/命令/测试工具、输入 schema、审批、资源限制、OpenAI-compatible Chat/Responses adapter、模型网络审批、流式事件、有限重试、上下文预算、checkpoint/恢复、持久审计、MCP stdio、仓库指令和 Git 只读上下文，以及 Agent run diff 汇总。当前 `Agent` run 已有写入后的验证门禁、验证状态 checkpoint 恢复和条件式 Review 修复闭环；已用真实 OpenAI-compatible 模型完成一次隔离仓库验收。它仍不是产品级 coding agent：独立 Task 聚合根与任务级验证查询、Anthropic adapter、精细网络策略、完整平台纵深隔离、Skills 和多会话任务接口仍未完成。
 
 对齐顺序应是：
 
@@ -61,10 +61,10 @@
 | --- | --- | --- | --- | --- |
 | 多步执行 | A1/A2/O1 | 支持串行 tool calls、最大步数和取消 | 无流式事件、重试、状态机、并行规则 | P1 |
 | 工具编排 | A2/A4/O5 | capability、Zod 校验、模型 JSON Schema、审批和超时 | 无并行调度、外部工具协议、持久审计 | P1 |
-| 完成判定 | A2/O1 | 可由 `run_tests` 返回结构化结果并继续回传模型 | 无任务级验证策略，模型仍可在未验证时结束 | P1 |
+| 完成判定 | A2/O1 | Agent run 在写入后要求结构化验证证据，并将验证状态写入 checkpoint | 尚无独立 Task 聚合根、验证豁免和任务级查询接口 | P1 |
 | Coding 工具 | A1/A2/O1 | 可读取、搜索、patch、运行受限命令和测试 | 无复杂编辑、依赖安装策略、网络工具和平台 sandbox | P1 |
 | 反馈交互 | A1/O1 | CLI 逐次请求模型网络与副作用确认，并显示模型开始、工具请求、完成或失败摘要 | 无流式文本、计划视图和终端 UI | P1 |
-| 恢复 | A2/O1 | Session/Run ID、checkpoint、过期恢复和工具幂等结果 | 无任务级恢复 CLI/API、跨设备校验和任务状态机 | P1 |
+| 恢复 | A2/O1 | Session/Run ID、checkpoint、过期恢复、取消后 `/resume` 和工具幂等结果 | 无任务级恢复 CLI/API、跨设备校验和环境身份重新校验 | P1 |
 
 ## 安全差距
 

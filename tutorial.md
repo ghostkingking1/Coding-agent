@@ -10,7 +10,7 @@
 
 ### 项目用途
 
-一个**原生的 TypeScript coding agent**（CLI 命令名 `veil`）：在受控工作区内，用大模型驱动一个「模型请求工具 → 工具执行 → 结果回传模型」的有限循环，完成文件读取、代码修改、命令执行和测试验证，并在运行结束时给出本次改动的 unified diff。
+一*个****原生的 TypeScript coding agent****（CLI 命令名 `veil`）：在受控工作区内，用大模型驱动一个「模型请求工具 → 工具*执行 → 结果回传模型」的有限循环，完成文件读取、代码修改、命令执行和测试验证，并在运行结束时给出本次改动的 unified diff。
 
 项目对外的一个重要特征是**零 Agent 框架依赖**：不使用 LangChain / LangGraph，运行时依赖只有 `diff` 和 `zod` 两个包，Agent 循环、工具注册表、审批策略、上下文压缩全部自研。
 
@@ -22,29 +22,29 @@
 
 ### 源码版本
 
-| 项 | 值 |
-| --- | --- |
-| HEAD commit | `053b921bfe76c25d520bc60b1a114a7dc704d849` |
-| commit 标题 | `feat(agent): enforce coding task verification` |
-| 提交时间 | 2026-09-13 17:05:35 +0800 |
-| 当前分支 | `codex/skills-foundation` |
-| 工作区状态 | 干净，无未提交改动 |
+| 项           | 值                                               |
+| ----------- | ----------------------------------------------- |
+| HEAD commit | `053b921bfe76c25d520bc60b1a114a7dc704d849`      |
+| commit 标题   | `feat(agent): enforce coding task verification` |
+| 提交时间        | 2026-09-13 17:05:35 +0800                       |
+| 当前分支        | `codex/skills-foundation`                       |
+| 工作区状态       | 干净，无未提交改动                                       |
 
 **影响结论的本地改动：无。** 工作区与 HEAD 一致，因此本大纲中的所有路径与符号都对应这个 commit，后续你改了代码需要重新核对。
 
 ### 规模基线（用于判断每课的阅读量）
 
-| 区域 | 文件数 | 行数 |
-| --- | --- | --- |
-| `src/agent/` | 10 | 1,969 |
-| `src/tools/` | 15 | 2,253 |
-| `src/model/` | 6 | 899 |
-| `src/repository/` | 3 | 244 |
-| `src/skill/` | 5 | 396 |
-| `src/cli.ts` + `src/index.ts` | 2 | 522 |
-| `test/` | 21 | 2,977 |
-| `sandbox-helper/src/main.rs` | 1 | 1,814 |
-| `docs/` | 13 | 1,339 |
+| 区域                            | 文件数 | 行数    |
+| ----------------------------- | --- | ----- |
+| `src/agent/`                  | 10  | 1,969 |
+| `src/tools/`                  | 15  | 2,253 |
+| `src/model/`                  | 6   | 899   |
+| `src/repository/`             | 3   | 244   |
+| `src/skill/`                  | 5   | 396   |
+| `src/cli.ts` + `src/index.ts` | 2   | 522   |
+| `test/`                       | 21  | 2,977 |
+| `sandbox-helper/src/main.rs`  | 1   | 1,814 |
+| `docs/`                       | 13  | 1,339 |
 
 生产 TypeScript 约 **6,300 行**，Rust helper **1,814 行**，测试约 **3,000 行**。全项目合计约 **12,663 行**。
 
@@ -52,20 +52,20 @@
 
 按必要性排序，标 ★ 的是没有会卡住的：
 
-| 知识点 | 为何需要 | 在本项目中的位置 | 必要性 |
-| --- | --- | --- | --- |
-| TypeScript 严格模式 + ESM | 全部生产代码是 `.ts` 且 `"type": "module"`，导入路径带 `.ts` 后缀 | `tsconfig.json`、所有 `src/**` | ★ |
-| Node.js 22+ 运行时特性 | `--experimental-strip-types`（直接跑 TS）、`--env-file-if-exists`、`node:test` | `package.json` scripts | ★ |
-| `AbortSignal` 与取消传播 | 模型请求、命令执行、MCP 调用全部接受取消信号 | `ModelRequest.signal`、`ExecutionRequest` | ★ |
-| Zod | 工具**执行侧**输入校验，与模型侧 JSON Schema 是两套 | `src/tools/tool-input-schemas.ts` | ★ |
-| LLM 工具调用协议 | `tool_calls` / function calling、tool result 关联、SSE 增量 | `src/model/openai-compatible.ts` | ★ |
-| SQLite 基础 | Session 与审计持久化 | `src/agent/sqlite-session-store.ts` | 中 |
-| 进程与 OS 安全概念 | realpath、符号链接逃逸、进程树终止、Job Object / namespace / seccomp | `src/tools/security.ts`、`sandbox-helper/` | 中 |
-| Rust 基础语法 | 第 08 课要读 1,814 行 Rust | `sandbox-helper/src/main.rs` | 仅第 08 课 |
+| 知识点                   | 为何需要                                                                    | 在本项目中的位置                                  | 必要性     |
+| --------------------- | ----------------------------------------------------------------------- | ----------------------------------------- | ------- |
+| TypeScript 严格模式 + ESM | 全部生产代码是 `.ts` 且 `"type": "module"`，导入路径带 `.ts` 后缀                       | `tsconfig.json`、所有 `src/**`               | ★       |
+| Node.js 22+ 运行时特性     | `--experimental-strip-types`（直接跑 TS）、`--env-file-if-exists`、`node:test` | `package.json` scripts                    | ★       |
+| `AbortSignal` 与取消传播   | 模型请求、命令执行、MCP 调用全部接受取消信号                                                | `ModelRequest.signal`、`ExecutionRequest`  | ★       |
+| Zod                   | 工具**执行侧**输入校验，与模型侧 JSON Schema 是两套                                      | `src/tools/tool-input-schemas.ts`         | ★       |
+| LLM 工具调用协议            | `tool_calls` / function calling、tool result 关联、SSE 增量                   | `src/model/openai-compatible.ts`          | ★       |
+| SQLite 基础             | Session 与审计持久化                                                          | `src/agent/sqlite-session-store.ts`       | 中       |
+| 进程与 OS 安全概念           | realpath、符号链接逃逸、进程树终止、Job Object / namespace / seccomp                  | `src/tools/security.ts`、`sandbox-helper/` | 中       |
+| Rust 基础语法             | 第 08 课要读 1,814 行 Rust                                                   | `sandbox-helper/src/main.rs`              | 仅第 08 课 |
 
 ### 覆盖范围与尚未覆盖
 
-**本大纲覆盖：** `src/` 全部五个模块、`src/cli.ts` 与 `src/index.ts`、`sandbox-helper/`、`test/` 全部 21 个测试文件、`docs/` 中与实现对应的链路文档。
+**本大纲覆盖：** `src/` 全部五个模块、`src/cli.ts` 与 `src/index.ts`、`sandbox-helper/`、`test/` 全部 22 个测试文件、`docs/` 中与实现对应的链路文档。
 
 **本次不覆盖：**
 
@@ -112,6 +112,7 @@
 ## 三、课程清单
 
 课程按**学习依赖**排序，不按目录结构排序。每课都能独立回答一个具体问题。
+
 
 ### 第一段：建立全貌
 
@@ -182,24 +183,24 @@ bin/veil.js
 
 **必读路径与符号（严格按此顺序）：**
 
-| # | 位置 | 看什么 | 看完能说出 |
-| --- | --- | --- | --- |
-| 1 | `package.json` | `scripts.start` | 为什么这个项目**没有构建步骤**——`node --experimental-strip-types src/cli.ts` 直接跑 TS 源码，所以读源码等于读运行时装的东西 |
-| 2 | `bin/veil.js` | 全局命令壳 | 安装成 `veil` 后请求怎么进到 `cli.ts` |
-| 3 | `src/cli.ts:411-423` | `isMainModule()` | 用 `pathToFileURL(resolve(argv[1])).href === import.meta.url` 判断"是被当入口跑还是被 import"，所以 `test/cli.test.ts` 能直接 import 它而不触发副作用 |
-| 4 | `src/cli.ts:133-186` | `main()` | 整条一次性运行路径的装配顺序；**这里是全项目的依赖装配中心** |
-| 5 | `src/cli.ts:37` | `CLI_MODEL_TOOL_NAMES` | 暴露给模型的 5 个工具名单，且它的顺序与注册顺序一致 |
-| 6 | `src/cli.ts:102-112` | `registerCliTools` | 暴露范围**由环境变量决定**（下面分支 D 讲） |
-| 7 | `src/cli.ts:115-131` | `LazyConfiguredModel` | 为什么 `veil` 启动不校验模型配置——延迟到第一次 `generate()` 才初始化 |
-| 8 | `src/index.ts` | 导出清单 | **项目架构地图**。这份清单就是"公共契约有哪些"的完整答案，建议完整过一遍 |
-| 9 | `src/agent/types.ts` | `AgentOptions` / `AgentRunOptions` / `AgentResult` / `RunEvent` / `ModelClient` / `Tool` | 先读契约再读实现，`agent.ts` 会变得非常好读 |
-| 10 | `src/agent/agent.ts:56-79` | `Agent.run()` | 入口校验、消息来源、**changeTracker 的所有权与释放规则** |
-| 11 | `src/agent/agent.ts:81-159` | `executeRun()` | 主循环本体、门禁提示注入、终止判定的三个出口 |
-| 12 | `src/agent/agent.ts:219-245` | `executePendingCalls()` | 一批工具调用的收尾：写消息、喂验证器、checkpoint、发事件 |
-| 13 | `src/agent/agent.ts:247-269` | `executeToolBatch()` | 并发/串行的波次算法，以及**为什么结果要按声明顺序回传** |
-| 14 | `src/agent/agent.ts:161-175` | `finishResult()` | `AgentResult` 是怎么拼出来的 |
-| 15 | `src/agent/agent.ts:20-22` | 两个常量 | `DEFAULT_MAX_STEPS = 8`、`DEFAULT_CONTEXT_BUDGET = 32_000 tokens` |
-| 16 | `docs/agent-flow-user-request.md` | 官方主链文档 | 对照代码验证。**文档与实现冲突时以实现为准** |
+| #  | 位置                                | 看什么                                                                                      | 看完能说出                                                                                                                       |
+| -- | --------------------------------- | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| 1  | `package.json`                    | `scripts.start`                                                                          | 为什么这个项目**没有构建步骤**——`node --experimental-strip-types src/cli.ts` 直接跑 TS 源码，所以读源码等于读运行时装的东西                                   |
+| 2  | `bin/veil.js`                     | 全局命令壳                                                                                    | 安装成 `veil` 后请求怎么进到 `cli.ts`                                                                                                 |
+| 3  | `src/cli.ts:411-423`              | `isMainModule()`                                                                         | 用 `pathToFileURL(resolve(argv[1])).href === import.meta.url` 判断"是被当入口跑还是被 import"，所以 `test/cli.test.ts` 能直接 import 它而不触发副作用 |
+| 4  | `src/cli.ts:133-186`              | `main()`                                                                                 | 整条一次性运行路径的装配顺序；**这里是全项目的依赖装配中心**                                                                                            |
+| 5  | `src/cli.ts:37`                   | `CLI_MODEL_TOOL_NAMES`                                                                   | 暴露给模型的 5 个工具名单，且它的顺序与注册顺序一致                                                                                                 |
+| 6  | `src/cli.ts:102-112`              | `registerCliTools`                                                                       | 暴露范围**由环境变量决定**（下面分支 D 讲）                                                                                                   |
+| 7  | `src/cli.ts:115-131`              | `LazyConfiguredModel`                                                                    | 为什么 `veil` 启动不校验模型配置——延迟到第一次 `generate()` 才初始化                                                                              |
+| 8  | `src/index.ts`                    | 导出清单                                                                                     | **项目架构地图**。这份清单就是"公共契约有哪些"的完整答案，建议完整过一遍                                                                                     |
+| 9  | `src/agent/types.ts`              | `AgentOptions` / `AgentRunOptions` / `AgentResult` / `RunEvent` / `ModelClient` / `Tool` | 先读契约再读实现，`agent.ts` 会变得非常好读                                                                                                 |
+| 10 | `src/agent/agent.ts:56-79`        | `Agent.run()`                                                                            | 入口校验、消息来源、**changeTracker 的所有权与释放规则**                                                                                       |
+| 11 | `src/agent/agent.ts:81-159`       | `executeRun()`                                                                           | 主循环本体、门禁提示注入、终止判定的三个出口                                                                                                      |
+| 12 | `src/agent/agent.ts:219-245`      | `executePendingCalls()`                                                                  | 一批工具调用的收尾：写消息、喂验证器、checkpoint、发事件                                                                                           |
+| 13 | `src/agent/agent.ts:247-269`      | `executeToolBatch()`                                                                     | 并发/串行的波次算法，以及**为什么结果要按声明顺序回传**                                                                                              |
+| 14 | `src/agent/agent.ts:161-175`      | `finishResult()`                                                                         | `AgentResult` 是怎么拼出来的                                                                                                       |
+| 15 | `src/agent/agent.ts:20-22`        | 两个常量                                                                                     | `DEFAULT_MAX_STEPS = 8`、`DEFAULT_CONTEXT_BUDGET = 32_000 tokens`                                                            |
+| 16 | `docs/agent-flow-user-request.md` | 官方主链文档                                                                                   | 对照代码验证。**文档与实现冲突时以实现为准**                                                                                                    |
 
 **选读证据：**
 
@@ -248,11 +249,12 @@ bin/veil.js
 ④ `loadRepositoryContext` 用 ① 的 root 加载仓库上下文；
 ⑤ `createTerminalPrompt()` —— 建终端交互对象；
 ⑥ `try` 块内按顺序装配：
-   - `createConfiguredModelClient` 建模型客户端（审批恒真）；
-   - `ToolRegistry` + `SecurityPolicy` 建工具注册表（审批转发给 `prompt.confirmTool`）；
-   - `registerCliTools` 注册工具；
-   - `new Agent(model, registry, {...}).run(input, {...})` 跑主循环；
-⑦ `finally` 块：`prompt.close()` —— 无论成功还是抛异常，readline 一定被关掉。
+
+- `createConfiguredModelClient` 建模型客户端（审批恒真）；
+- `ToolRegistry` + `SecurityPolicy` 建工具注册表（审批转发给 `prompt.confirmTool`）；
+- `registerCliTools` 注册工具；
+- `new Agent(model, registry, {...}).run(input, {...})` 跑主循环；
+  ⑦ `finally` 块：`prompt.close()` —— 无论成功还是抛异常，readline 一定被关掉。
 
 四个必须理解的点：
 
@@ -325,12 +327,12 @@ bin/veil.js
 
 **追踪器的释放规则值得单独记，因为它有两个触发点、容易看漏：**
 
-| 场景 | `ownsChangeTracker` | `completed` | `finally` 里是否 dispose | 实际谁来清理 |
-| --- | --- | --- | --- | --- |
-| Agent 自建 tracker，正常结束 | `true` | `true` | **是** | `finally` |
-| Agent 自建 tracker，抛异常 | `true` | `false` | **是** | `finally` |
-| CLI 传入 tracker，正常结束 | `false` | `true` | **否** | **`finish()` 内部** |
-| CLI 传入 tracker，抛异常 | `false` | `false` | **是** | `finally` |
+| 场景                    | `ownsChangeTracker` | `completed` | `finally` 里是否 dispose | 实际谁来清理            |
+| --------------------- | ------------------- | ----------- | --------------------- | ----------------- |
+| Agent 自建 tracker，正常结束 | `true`              | `true`      | **是**                 | `finally`         |
+| Agent 自建 tracker，抛异常  | `true`              | `false`     | **是**                 | `finally`         |
+| CLI 传入 tracker，正常结束   | `false`             | `true`      | **否**                 | **`finish()` 内部** |
+| CLI 传入 tracker，抛异常    | `false`             | `false`     | **是**                 | `finally`         |
 
 第三行是最绕的。答案在 `run-diff.ts:155-159`：
 
@@ -429,11 +431,11 @@ bin/veil.js
 
 三个门槛决定一次工具调用是进"并行波次"还是立刻串行：
 
-| 条件 | 含义 |
-| --- | --- |
-| `!isParallelizable(call)` | 工具 manifest 没声明 `parallelizable: true` → **永远串行** |
-| `wave.length >= maxConcurrentToolCalls` | 当前波次已达上限（默认 **4**，`agent.ts:45`）→ 先冲刷再重新攒 |
-| `conflicts(call, wave)` | 与同波次里的某个调用**冲突键相同** → 先冲刷，避免并发改同一个资源 |
+| 条件                                      | 含义                                                |
+| --------------------------------------- | ------------------------------------------------- |
+| `!isParallelizable(call)`               | 工具 manifest 没声明 `parallelizable: true` → **永远串行** |
+| `wave.length >= maxConcurrentToolCalls` | 当前波次已达上限（默认 **4**，`agent.ts:45`）→ 先冲刷再重新攒         |
+| `conflicts(call, wave)`                 | 与同波次里的某个调用**冲突键相同** → 先冲刷，避免并发改同一个资源              |
 
 `conflicts` 的判据是 `manifest.conflictKey(input)` 的返回值是否相等。看 `workspace-tools.ts` 里的实际实现：
 
@@ -501,11 +503,11 @@ bin/veil.js
 
 这就是 3.3 节那个恒 `false` 的 `confirmTool`。实际效果：
 
-| 工具 | capability | 非 TTY 下 |
-| --- | --- | --- |
-| `read_file` / `list_files` / `search_text` | `read` | ✅ 正常执行（只读默认允许） |
-| `apply_patch` | `write` | ❌ 审批恒拒 → `{error}` |
-| `run_tests` | `execute` | ❌ 审批恒拒 → `{error}` |
+| 工具                                         | capability | 非 TTY 下            |
+| ------------------------------------------ | ---------- | ------------------ |
+| `read_file` / `list_files` / `search_text` | `read`     | ✅ 正常执行（只读默认允许）     |
+| `apply_patch`                              | `write`    | ❌ 审批恒拒 → `{error}` |
+| `run_tests`                                | `execute`  | ❌ 审批恒拒 → `{error}` |
 
 **所以 `veil "跑一下测试" > log.txt` 这种用法会得到一个"测试没跑、权限被拒"的回答。** 这不是 bug，是设计。
 
@@ -617,16 +619,16 @@ D:\demo> veil "修复 calculateTotal 的空数组问题并跑测试"
 
 **这个流程里已经实现的失败、恢复与清理路径：**
 
-| 情况 | 实际行为 | 依据 |
-| --- | --- | --- |
-| 审批时按 `n` | `ApprovalDeniedError` → 转成 `{error}` 的 tool 消息 → **run 继续**，模型看到拒绝原因 | `agent.ts:312-317` |
-| 工具抛异常 | 同上，转 `{error}`，不中断 | `agent.ts:312-317` |
-| 模型请求超时 / 网络错 | `generateWithRetry` 按错误分类退避重试，最多 3 次、总时长 60s | `agent.ts:177-199`（第 11 课） |
-| 模型返回不可重试错误 | 立即 `throw` → 发 `run_failed` → **整个 run 结束** | `agent.ts:133-136` |
-| 改了东西但反复不验证 | 每轮注入门禁提示；到 `maxSteps = 8` → `block("maximum model steps reached before verification")` → `stopReason = "blocked"` | `agent.ts:156-158` |
-| 用户中断（`AbortSignal`） | 下一轮开头 `throwIfAborted()` 抛出；`completed` 仍为 `false` → **`finally` 里 `dispose()` 清理基线** | `agent.ts:115`、`agent.ts:77` |
-| 进程被强杀 | `finally` 跑不到；靠 `cleanupStaleBaselineDirectories` 按 mtime 兜底清理 | `run-diff.ts:48` |
-| 恢复运行 | `resumeCheckpoint` 提供消息与步数；命中 `replayToolResults` 的工具调用**不产生副作用** | `agent.ts:61`、`agent.ts:274-278` |
+| 情况                  | 实际行为                                                                                                              | 依据                               |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------- | -------------------------------- |
+| 审批时按 `n`            | `ApprovalDeniedError` → 转成 `{error}` 的 tool 消息 → **run 继续**，模型看到拒绝原因                                              | `agent.ts:312-317`               |
+| 工具抛异常               | 同上，转 `{error}`，不中断                                                                                                | `agent.ts:312-317`               |
+| 模型请求超时 / 网络错        | `generateWithRetry` 按错误分类退避重试，最多 3 次、总时长 60s                                                                      | `agent.ts:177-199`（第 11 课）       |
+| 模型返回不可重试错误          | 立即 `throw` → 发 `run_failed` → **整个 run 结束**                                                                       | `agent.ts:133-136`               |
+| 改了东西但反复不验证          | 每轮注入门禁提示；到 `maxSteps = 8` → `block("maximum model steps reached before verification")` → `stopReason = "blocked"` | `agent.ts:156-158`               |
+| 用户中断（`AbortSignal`） | 下一轮开头 `throwIfAborted()` 抛出；`completed` 仍为 `false` → **`finally` 里 `dispose()` 清理基线**                             | `agent.ts:115`、`agent.ts:77`     |
+| 进程被强杀               | `finally` 跑不到；靠 `cleanupStaleBaselineDirectories` 按 mtime 兜底清理                                                    | `run-diff.ts:48`                 |
+| 恢复运行                | `resumeCheckpoint` 提供消息与步数；命中 `replayToolResults` 的工具调用**不产生副作用**                                                 | `agent.ts:61`、`agent.ts:274-278` |
 
 **注意这里没有的东西：** 没有 Planner、没有 Reviewer、没有任务 DAG（`docs/agent-flow-user-request.md` 第 10 节明确列为未实现）。**一轮 run 的"计划"完全由模型在对话里隐式完成**，代码只提供循环和边界。
 
@@ -1111,12 +1113,88 @@ D:\demo> veil "修复 calculateTotal 的空数组问题并跑测试"
 
 **本课要专门核对的「文档滞后于实现」清单（本大纲已初步核实）：**
 
-| 项 | 文档说法 | 代码事实 | 处置 |
-| --- | --- | --- | --- |
-| 任务状态集 | 阶段五：`created/analyzing/planning/executing/validating/repairing` | `TaskState` 为 `received/working/verifying/repairing/completed/blocked` | 以代码为准，展开第 15 课时定论 |
-| Skills | 阶段七，排在最后、标注未完成 | `src/skill/` 已存在 5 个文件；当前分支 `codex/skills-foundation` | 展开第 18 课时核实完成度 |
-| 网络能力 | 路线图标为 P2 扩展 | `network-proxy.ts` / `network-command.ts` 已实现 | 展开第 09 课时核实策略完整度 |
-| `run_command` 是否暴露给模型 | README：CLI **不**向模型开放通用 `run_command` | 工具本身存在（`createRunCommandTool`） | 展开第 01/04 课时核实 CLI 注册范围 |
+| 项                     | 文档说法                                                            | 代码事实                                                                   | 处置                      |
+| --------------------- | --------------------------------------------------------------- | ---------------------------------------------------------------------- | ----------------------- |
+| 任务状态集                 | 阶段五：`created/analyzing/planning/executing/validating/repairing` | `TaskState` 为 `received/working/verifying/repairing/completed/blocked` | 以代码为准，展开第 15 课时定论       |
+| Skills                | 阶段七，排在最后、标注未完成                                                  | `src/skill/` 已存在 5 个文件；当前分支 `codex/skills-foundation`                  | 展开第 18 课时核实完成度          |
+| 网络能力                  | 路线图标为 P2 扩展                                                     | `network-proxy.ts` / `network-command.ts` 已实现                          | 展开第 09 课时核实策略完整度        |
+| `run_command` 是否暴露给模型 | README：CLI **不**向模型开放通用 `run_command`                           | 工具本身存在（`createRunCommandTool`）                                         | 展开第 01/04 课时核实 CLI 注册范围 |
+
+**状态：** `大纲`
+
+---
+
+### 第九段：多角色编排
+
+> **本段对应 `src/agent/agent-router.ts`（276 行）与 `test/agent/agent-router.test.ts`（7 个用例）。**
+> 该文件在工作区为**未跟踪新增**（`git status` 显示 `??`），`cli.ts` / `index.ts` / `agent.ts` 为已修改未提交。
+> 因此 `docs/agent-flow-user-request.md:48` 的「当前没有独立的 Planner 或 Reviewer」与第 10 节「当前边界」里列出的
+> 「Planner 或任务 DAG」「独立 Reviewer / 自动代码审查阶段」**已滞后于实现**，以代码为准。
+
+#### 21 条件触发的角色路由：这一轮到底要跑哪几个 Agent
+
+**读完能回答：** 四个角色各自的职责与权限差异；两阶段决策分别读哪些信号、六个阈值各是多少；为什么「高风险词」能同时影响两个阶段；为什么出现一个高风险词还不足以触发 Planner；`crossModuleChange` 按什么粒度判断。
+
+**主链：** 请求文本 + `planMode` → `decideInitial` 打分 → `[planner] + execute` → 执行产物（diff / verification / 事件）→ `decidePostExecution` 求条件组 → `[execute] + [review] + [reflection]`
+
+**必读路径与符号：**
+
+1. `src/agent/agent-router.ts:6` — `AgentRole` 四角色，注释写明「Execute 是唯一默认角色」
+2. `src/agent/agent-router.ts:126` — `DEFAULT_POLICY` 六个阈值：Planner 4 分、Review 3 文件 / 80 行 / 1 次失败、Reflection 1 次修复 / 8 文件
+3. `src/agent/agent-router.ts:135` — `HIGH_RISK_TERMS` 中英各 7 词，只对**请求文本**做小写包含匹配
+4. `src/agent/agent-router.ts:147` — `decideInitial` 的打分：planMode 直接加满阈值、高风险词 1 个 +2 / 2 个及以上 +4、超长请求 +1、已观察工具调用 +1
+5. `src/agent/agent-router.ts:159` — `decidePostExecution`：Review 与 Reflection 是两个**相互独立**的条件组，可以只出一个
+6. `src/agent/agent-router.ts:190` — `signals()` 归一化：`crossModuleChange` 取路径**首段**去重后是否多于 1
+7. `test/agent/agent-router.test.ts` — 7 个用例，每个锁一条行为，是这一课最诚实的规格
+8. `src/model/model-router.ts:28` — 同一份关键词表的第二处副本，属于模型级路由
+
+**实测记录（本大纲已在 Node 22.22 下直调 `AgentRouter` 验证，结论确定）：**
+
+1. **`observed_tool_failure` 是死条件。** `signals()` 读取的是 `observedToolCalls` / `observedToolFailures`，而 `decidePostExecution` 传入的字段名是 `toolCallCount` / `toolFailureCount`。TypeScript 对非字面量入参不做多余属性检查，所以编译通过；运行期取到 `undefined` 后兜底为 0。实测传入 `toolFailureCount: 5`，`signals.observedToolFailures` 仍为 `0`，Review 不触发。测试用例只覆盖「工具失败 + 修复两轮 → 进 Reflection」，没覆盖「工具失败 → 进 Review」，测试全绿不构成反证。
+2. **`observed_tool_calls` 在编排路径下同样恒为 0。** `TaskOrchestrator` 调 `decideInitial` 时只传 `request` 与 `planMode`，因此该分项只在直接调用路由器时才有意义。
+3. **单个高风险词不足。** 实测 `"fix the security issue in the parser"` 得 2 分，低于阈值 4，只跑 Execute；两个词才得 4 分。
+4. **`crossModuleChange` 按路径首段判断，粒度偏粗。** 实测 `src/agent/x.ts` 与 `src/tools/y.ts` 判定为同模块，`src/a.ts` 与 `test/b.test.ts` 判为跨模块。在 `src/` 单层布局的项目里，真正的跨模块改动会被漏判，此时 Review 改由文件数或行数阈值兜底。
+5. 阈值注入会被校验：传 `0` 或显式 `undefined` 均抛 `must be a positive integer`。
+6. **验证状态白名单与状态机的实际取值没有对齐。** `VerificationStatus` 共六态（`src/agent/types.ts:16`：`not_required` / `pending` / `passed` / `failed` / `inconclusive` / `unavailable`），而 Router 的 `verification_issue` 只匹配 `failed` / `inconclusive` / `unavailable` 三态。`pending` 表示「发生了写入但验证工具从未跑过」，恰恰是最该反思的状态，却不在白名单里；这一条实际由 `repairAttempts >= 1` 兜住，因为 `TaskStateMachine.noteVerificationRequired` 会在模型带着未验证写入收尾时给 `repairAttempts` 加一。
+
+**选读验证：** `test/agent/agent-router.test.ts`（7 个用例）
+
+**暂缓：** 模型级路由与复杂度打分 → 第 10 课；两处关键词表要不要收敛为一份常量 → 第 20 课边界。
+
+**状态：** `大纲`
+
+---
+
+#### 22 角色编排与 artifact 协议：角色之间怎么传数据、失败为什么不能回 Planner
+
+**读完能回答：** `TaskContext` 里装了什么、`roleInput` 为什么给四个角色不同视图；四个 artifact 各自的字段含义与来源方；四种角色在 CLI 里被授予什么工具权限、能不能写文件；为什么「执行中的失败只能进 Reflection 候选，不会重新触发 Planner」；`planningOnly` 如何让 plan 模式跑到 Planner 就停；计划范围怎么变成执行期的权限边界。
+
+**主链：** `TaskOrchestrator.run` → `decideInitial` → planner handler → `PlanStore.writeScoped` 落盘 → execute handler → `decidePostExecution` → review handler → reflection handler → `TaskOrchestratorResult`
+
+**必读路径与符号：**
+
+1. `src/agent/agent-router.ts:41` — `PlanArtifact`：`kind` + `plan` + `source: "planner"` + `version`，版本号说明 artifact 是可被替换的
+2. `src/agent/agent-router.ts:76` — `TaskContext`：注释写明「不共享隐藏对话」，原始 transcript 仍归 Session
+3. `src/agent/agent-router.ts:119` — `TaskEvent` 五种事件，`sandbox_failed` 是 Reflection 的信号来源之一
+4. `src/agent/agent-router.ts:220` — `TaskOrchestrator.run`：先 Planner 后 Execute，`planningOnly` 在中间提前返回；缺 handler 直接抛错而不是静默跳过
+5. `src/agent/agent-router.ts:270` — `roleInput`：Planner 只拿 base，Execute 多拿 plan，Review 多拿 execution，Reflection 多拿 review 与 events
+6. `src/cli.ts:99` — `createCliRoleHandlers`：四个 handler 的真实系统提示与工具过滤
+7. `src/cli.ts:108` — `roleAgent`：`includeRunDiff: false`、`readOnly` 过滤器、只有 Execute 挂 `verification: coding`
+8. `src/cli.ts:347` — 一次性命令路径的接入与前后的 stdout/stderr 输出
+9. `src/cli.ts:646` — REPL 路径的接入，其中 `execute` 被覆写以复用 Session 的 `changeTracker`
+10. `src/agent/work-modes.ts:220` — `PlanStore.writeScoped`：先写索引再替换 Markdown、`version` 单调递增
+11. `src/agent/work-modes.ts:117` — `planScopeViolation`：计划里声明的 tools / capabilities / paths / commands 就是执行期的越界判据
+
+**实测记录（本大纲已沿源码核对，结论确定）：**
+
+1. **两条入口给路由器的输入不一致。** 一次性命令路径的 Execute 走 `includeRunDiff: false`（`src/cli.ts:111`），`Agent` 内部 `changeTracker` 为 `undefined`，`finishResult` 里是 `...(diff ? { diff } : {})`（`src/agent/agent.ts:179,188`），等于 `result` 上**根本没有 `diff` 属性**。Router 的 Review 有三个信号取自 `diff`，所以在该路径下只剩「请求里出现高风险词」一条触发路径。REPL 路径覆写了 `execute` 并传入 Session 的 `changeTracker`（`src/cli.ts:651-653`），diff 有效，阈值能正常生效。
+2. **`events` 在执行期不会累积。** `TaskOrchestrator.run` 只在开始时取一次 `initialEvents`，执行中新产生的事件不会追加；`sandboxFailure` 信号取自这同一批事件，而两条 CLI 入口都没有传 `initialEvents`，所以 `sandbox_failure` 在 CLI 里恒为 false。
+3. **`roleInput` 与「最小输入包」存在张力。** `roleInput` 本身只挑选 artifact，但 Review 与 Reflection 的 handler 把入参整体 `JSON.stringify` 交给模型（`src/cli.ts:137,144`），而 `ExecutionArtifact` 内嵌完整的 `AgentResult`（含 `messages` 全量），序列化后完整 transcript 仍然回到了这两个角色手里。真正被隔离的只有「不直接传 transcript 对象」这一层。
+4. `test/cli.test.ts` 当前**没有**编排路径的用例，这一课的验证只能靠 `agent-router.test.ts` 的单元测试加手工跑 CLI。
+
+**选读验证：** `test/agent/agent-router.test.ts:56`（artifact 在角色间按序传递、Planner 输入里不含 plan）；`test/cli.test.ts` 当前**没有**编排路径的用例
+
+**暂缓：** Review / Reflection 产物的真实消费方（当前仅打印一行到 stderr，不回流到下一轮请求）→ 第 20 课边界。
 
 **状态：** `大纲`
 
@@ -1138,8 +1216,8 @@ D:\demo> veil "修复 calculateTotal 的空数组问题并跑测试"
 
 ## 五、大纲自检
 
-- **主要功能是否都有归属：** `src/` 五个模块 + `cli.ts` / `index.ts` + `sandbox-helper` 均已分配到 01–20 课，无遗漏模块。
-- **课程是否按学习依赖排序：** 先全貌（01）、再执行内核（02–04）、再安全与执行（05–09，依赖工具契约）、再模型接入（10–11）、再状态与变更（12–14）、再任务与仓库（15–16）、再扩展机制（17–18）、最后验证与边界（19–20）。
-- **学习者能否按路线找到真实源码：** 每课所有路径与符号均取自当前 HEAD（`053b921`）的实际导出，已在源码中定位。
+- **主要功能是否都有归属：** `src/` 五个模块 + `cli.ts` / `index.ts` + `sandbox-helper` 均已分配到 01–22 课，无遗漏模块。
+- **课程是否按学习依赖排序：** 先全貌（01）、再执行内核（02–04）、再安全与执行（05–09，依赖工具契约）、再模型接入（10–11）、再状态与变更（12–14）、再任务与仓库（15–16）、再扩展机制（17–18）、再验证与边界（19–20）、最后多角色编排（21–22，依赖 14 的变更追踪与 15 的任务状态机）。
+- **学习者能否按路线找到真实源码：** 每课所有路径与符号均取自当前 HEAD（`053b921`）的实际导出，已在源码中定位；第 21–22 课对应的 `src/agent/agent-router.ts` 与 `test/agent/agent-router.test.ts` 为工作区**未跟踪新增**，符号以工作区文件为准。
 - **相邻课程是否重复同一核心流程：** 06 与 07 已按「文件操作 vs 命令执行」拆分；14 与 16 已按「变更追踪 vs 指令注入」拆分，各回答不同问题。
 - **未覆盖模块与不确定边界是否列出：** 见「覆盖范围与尚未覆盖」与第 20 课落差表；未运行 `npm test`、skill / network 无专项测试等不确定项均已显式标注。

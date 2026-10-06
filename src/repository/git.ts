@@ -1,6 +1,8 @@
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import path from "node:path";
+import os from "node:os";
+import fs from "node:fs/promises";
 import type { RunDiff } from "../agent/run-diff.ts";
 
 export type GitFileState = "staged" | "unstaged" | "untracked" | "conflicted";
@@ -17,6 +19,7 @@ export interface GitStatusSummary {
 }
 export interface GitChangeReport { readonly before: GitStatusSummary; readonly after: GitStatusSummary; readonly userModifiedPaths: readonly string[]; readonly agentModifiedPaths: readonly string[]; readonly overlappingPaths: readonly string[]; }
 export interface GitCommitPreview { readonly status: GitStatusSummary; readonly diffCheck: readonly string[]; readonly digest: string; readonly message: string; }
+export interface GitRecoveryTree { readonly provider: "git-object-store"; readonly repositoryRoot: string; readonly objectId: string; readonly refName: string; readonly objectType: "tree"; }
 
 /** 固定 argv 的 Git 只读查询器；不允许仓库配置注入 shell、hooks 或外部 diff。 */
 export class GitRepository {
@@ -50,9 +53,74 @@ export class GitRepository {
     return { status, diffCheck, digest, message };
   }
 
-  private async run(args: readonly string[], allowFailure = false): Promise<{ ok: boolean; stdout: string; stderr: string }> {
+  /**
+   * 将当前工作区写成 Git tree object，并仅在 refs/veil/recovery 下建立可达引用。
+   * 临时 index 保证不会修改用户 index、HEAD、分支或提交历史。
+   */
+  async createRecoveryTree(recoveryPointId: string): Promise<GitRecoveryTree> {
+    validateRecoveryId(recoveryPointId);
+    const status = await this.status();
+    if (!status.isRepository || path.resolve(status.repositoryRoot!) !== this.workspaceRoot) throw new Error("Workspace is not the repository root");
+    const refName = `refs/veil/recovery/${recoveryPointId}`;
+    const temporaryIndex = path.join(await fs.mkdtemp(path.join(os.tmpdir(), "veil-recovery-index-")), "index");
+    try {
+      const reset = await this.run(["read-tree", "--reset", "HEAD"], true, { GIT_INDEX_FILE: temporaryIndex });
+      if (!reset.ok) {
+        // 空仓库没有 HEAD；从空临时 index 开始仍可写出 tree object。
+        await fs.rm(temporaryIndex, { force: true });
+      }
+      const added = await this.run(["add", "-A", "--", "."], false, { GIT_INDEX_FILE: temporaryIndex });
+      if (!added.ok) throw new Error(`Git recovery staging failed: ${added.stderr || "unknown error"}`);
+      const tree = await this.run(["write-tree"], false, { GIT_INDEX_FILE: temporaryIndex });
+      if (!tree.ok || !/^[0-9a-f]{40,64}$/.test(tree.stdout.trim())) throw new Error("Git recovery tree creation failed");
+      const updated = await this.run(["update-ref", refName, tree.stdout.trim(), ""], false);
+      if (!updated.ok) throw new Error(`Git recovery ref creation failed: ${updated.stderr || "unknown error"}`);
+      const verified = await this.run(["rev-parse", `${refName}^{tree}`], false);
+      if (!verified.ok || verified.stdout.trim() !== tree.stdout.trim()) throw new Error("Git recovery tree verification failed");
+      return { provider: "git-object-store", repositoryRoot: this.workspaceRoot, objectId: tree.stdout.trim(), refName, objectType: "tree" };
+    } finally {
+      await fs.rm(path.dirname(temporaryIndex), { recursive: true, force: true });
+    }
+  }
+
+  /** 将工作区恢复为指定 tree；只修改工作区文件，不触碰用户分支和 HEAD。 */
+  async restoreRecoveryTree(recovery: GitRecoveryTree): Promise<void> {
+    if (path.resolve(recovery.repositoryRoot) !== this.workspaceRoot || recovery.objectType !== "tree") throw new Error("Git recovery tree workspace mismatch");
+    const verified = await this.run(["rev-parse", `${recovery.refName}^{tree}`], false);
+    if (!verified.ok || verified.stdout.trim() !== recovery.objectId) throw new Error("Git recovery tree is missing or changed");
+    const current = await this.listManagedPaths();
+    const target = await this.listTreePaths(recovery.objectId);
+    for (const relative of current.filter((file) => !target.has(file))) {
+      const absolute = path.join(this.workspaceRoot, relative);
+      if ((await fs.lstat(absolute)).isSymbolicLink()) throw new Error(`Rollback target contains a symbolic link: ${relative}`);
+      await fs.rm(absolute, { force: true });
+    }
+    const temporaryIndex = path.join(await fs.mkdtemp(path.join(os.tmpdir(), "veil-recovery-restore-")), "index");
+    try {
+      const loaded = await this.run(["read-tree", "--reset", recovery.objectId], false, { GIT_INDEX_FILE: temporaryIndex });
+      if (!loaded.ok) throw new Error(`Git recovery tree load failed: ${loaded.stderr || "unknown error"}`);
+      const checkedOut = await this.run(["checkout-index", "--all", "--force"], false, { GIT_INDEX_FILE: temporaryIndex });
+      if (!checkedOut.ok) throw new Error(`Git recovery tree restore failed: ${checkedOut.stderr || "unknown error"}`);
+    } finally {
+      await fs.rm(path.dirname(temporaryIndex), { recursive: true, force: true });
+    }
+  }
+
+  private async listManagedPaths(): Promise<string[]> {
+    const result = await this.run(["ls-files", "--cached", "--others", "--exclude-standard", "-z"]);
+    if (!result.ok) throw new Error(`Git file listing failed: ${result.stderr || "unknown error"}`);
+    return result.stdout.split("\0").filter(Boolean).map((value) => value.replaceAll("\\", "/"));
+  }
+
+  private async listTreePaths(objectId: string): Promise<Set<string>> {
+    const result = await this.run(["ls-tree", "-r", "--name-only", "-z", objectId]);
+    if (!result.ok) throw new Error(`Git tree listing failed: ${result.stderr || "unknown error"}`);
+    return new Set(result.stdout.split("\0").filter(Boolean).map((value) => value.replaceAll("\\", "/")));
+  }
+
+  private async run(args: readonly string[], allowFailure = false, environment: Record<string, string> = {}): Promise<{ ok: boolean; stdout: string; stderr: string }> {
     return await new Promise((resolve, reject) => {
-      const child = spawn("git", ["-c", "core.hooksPath=", "-C", this.workspaceRoot, ...args], { shell: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+      const child = spawn("git", ["-c", "core.hooksPath=", "-C", this.workspaceRoot, ...args], { shell: false, windowsHide: true, env: { ...process.env, ...environment }, stdio: ["ignore", "pipe", "pipe"] });
       let stdout = Buffer.alloc(0); let stderr = Buffer.alloc(0); let exceeded = false;
       const collect = (target: "stdout" | "stderr") => (chunk: Buffer) => { if (exceeded) return; const next = Buffer.concat([target === "stdout" ? stdout : stderr, chunk]); if (next.length > this.maxOutputBytes) { exceeded = true; child.kill(); return; } if (target === "stdout") stdout = next; else stderr = next; };
       child.stdout.on("data", collect("stdout")); child.stderr.on("data", collect("stderr"));
@@ -62,12 +130,18 @@ export class GitRepository {
   }
 }
 
+function validateRecoveryId(value: string): void { if (!/^[A-Za-z0-9_-]{3,160}$/.test(value)) throw new Error("Invalid recovery point id"); }
+
 /** 运行前后 Git 状态与 Agent 变更集交叉标记，避免把已存在的用户修改归属给 Agent。 */
 export class GitChangeTracker {
   private before?: GitStatusSummary;
   private readonly repository: GitRepository;
   constructor(repository: GitRepository) { this.repository = repository; }
-  async start(): Promise<void> { this.before = await this.repository.status(); }
+  async start(): Promise<void> {
+    // Review 修复可能在同一任务内多次调用 Execute；只记录任务第一次的基线，避免后续 run 覆盖用户初始状态。
+    if (this.before) return;
+    this.before = await this.repository.status();
+  }
   async finish(diff?: RunDiff): Promise<GitChangeReport> {
     const before = this.before ?? await this.repository.status();
     const after = await this.repository.status();

@@ -34,6 +34,18 @@ export class ToolRegistry {
     return this;
   }
 
+  /** 在工作模式切换时替换同名工具实现，避免旧的受限策略残留。 */
+  replace(tool: Tool): this {
+    if (!this.tools.has(tool.name)) throw new Error(`Tool is not registered: ${tool.name}`);
+    this.tools.set(tool.name, tool);
+    return this;
+  }
+
+  /** 仅用于撤回 full 模式临时注册的宿主工具。 */
+  unregister(name: string): boolean {
+    return this.tools.delete(name);
+  }
+
   /** 按名称查找工具。 */
   get(name: string): Tool | undefined {
     return this.tools.get(name);
@@ -45,8 +57,8 @@ export class ToolRegistry {
   }
 
   /** 返回显式声明 JSON Schema 的工具，避免把本地实现细节或未知参数暴露给模型。 */
-  listModelDefinitions(): readonly ModelToolDefinition[] {
-    return this.list().flatMap((tool) => {
+  listModelDefinitions(filter?: (tool: Tool) => boolean): readonly ModelToolDefinition[] {
+    return this.list().filter((tool) => !filter || filter(tool)).flatMap((tool) => {
       const inputSchema = tool.manifest?.modelInputSchema;
       if (!inputSchema) return [];
       return [{

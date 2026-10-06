@@ -87,6 +87,27 @@ test("run_command requests approval before spawning", async () => {
   });
 });
 
+test("full host access runs from an outside cwd with unrestricted network policy", async () => {
+  await withWorkspace(async (root) => {
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "coding-agent-host-command-"));
+    try {
+      const tool = createRunCommandTool(new WorkspacePolicy({ root }), {
+        sandbox: new ProcessSandboxBackend({ allowFullNetwork: true }),
+        hostAccess: true,
+        allowedNetwork: { mode: "full" },
+      });
+      const result = await executeTool(tool, {
+        command: process.execPath,
+        args: ["-e", "console.log(process.cwd())"],
+        cwd: outside,
+        network: { mode: "full" },
+      }) as RunCommandResult;
+      assert.equal(result.exitCode, 0);
+      assert.equal(path.normalize(result.stdout.trim()), path.normalize(outside));
+    } finally { await fs.rm(outside, { recursive: true, force: true }); }
+  });
+});
+
 test("run_command rejects a prepared request mutated during approval", async () => {
   await withWorkspace(async (root) => {
     const marker = path.join(root, "marker.txt");

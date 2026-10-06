@@ -12,6 +12,7 @@
   },
   "scripts": {
     "start": "node --env-file-if-exists=.env --experimental-strip-types src/cli.ts",
+    "benchmark": "node --env-file-if-exists=.env --experimental-strip-types src/benchmark/cli.ts",
     "test": "node --experimental-strip-types --test \"test/**/*.test.ts\"",
     "sandbox:build": "cargo build --manifest-path sandbox-helper/Cargo.toml --release"
   },
@@ -21,6 +22,8 @@
   },
   "dependencies": {
     "diff": "^9.0.0",
+    "gray-matter": "^4.0.3",
+    "yaml": "^2.9.1",
     "zod": "^4.4.3"
   }
 }
